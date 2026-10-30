@@ -1,0 +1,343 @@
+--- worktrees/integration/cli/main.cpp	2026-10-29 18:26:07
++++ worktrees/L2/cli/main.cpp	2026-10-29 18:35:15
+@@ -34,6 +34,13 @@
+ #include <thread>
+ #include <vector>
+ 
++#if defined(__APPLE__) || defined(__unix__)
++#  include <fcntl.h>
++#  include <sys/file.h>
++#  include <unistd.h>
++#  define NYMPHES_HAS_FLOCK 1
++#endif
++
+ using namespace nymphes;
+ 
+ namespace
+@@ -92,7 +99,7 @@
+         "  txt <in.syx> [--index N] [--out F]  human-readable parameter text\n"
+         "  export-txt <in.syx> --out F         tab-separated table of all presets\n"
+         "\n"
+-        "device commands (wrap the process in flock on vendor/midi.lock):\n"
++        "device commands (each takes --lock <file>; there is no flock(1) on macOS):\n"
+         "  devices                             list MIDI endpoints\n"
+         "  ccmap                               print the 82-CC parameter map\n"
+         "  read --slot A1 [--out F]            load that slot, capture what the device sends\n"
+@@ -131,15 +138,23 @@
+         else errors.push_back ("message " + std::to_string (i) + ": " + err);
+     }
+ 
+-    int user = 0, factory = 0, badCrc = 0, variable = 0;
++    int user = 0, factory = 0, badCrc = 0;
++    size_t variable = 0, badReencode = 0, nonCanonical = 0;
+     size_t minPayload = SIZE_MAX, maxPayload = 0;
+-    for (const auto& p : presets)
++    for (size_t i = 0; i < presets.size(); ++i)
+     {
++        const auto& p = presets[i];
+         if (p.address().isUser()) ++user; else ++factory;
+         if (! p.crcValid()) ++badCrc;
+         if (p.payloadSize() != static_cast<size_t> (kPayloadSize)) ++variable;
+         minPayload = std::min (minPayload, p.payloadSize());
+         maxPayload = std::max (maxPayload, p.payloadSize());
++        // The two checks that make this a gate rather than a summary: the frame must
++        // re-serialise byte-for-byte (the slot-write path depends on exactly that),
++        // and the parsed protobuf must reproduce the payload (otherwise editing a
++        // preset would silently rewrite untouched fields).
++        if (p.encodeFrameRaw() != frames[i]) ++badReencode;
++        if (! p.isCanonical()) ++nonCanonical;
+     }
+ 
+     std::printf ("file      %s\n", path.c_str());
+@@ -148,11 +163,17 @@
+     std::printf ("pages     %d USER, %d FACTORY\n", user, factory);
+     std::printf ("crc       %zu/%zu valid\n", presets.size() - static_cast<size_t> (badCrc), presets.size());
+     if (! presets.empty())
+-        std::printf ("payload   %zu..%zu bytes (%d of %zu not the canonical %d)\n",
+-                     minPayload, maxPayload, variable, presets.size(), kPayloadSize);
++        std::printf ("payload   %zu..%zu bytes (%zu of %zu not the canonical %zu)\n",
++                     minPayload, maxPayload, variable, presets.size(),
++                     static_cast<std::size_t> (kPayloadSize));
++    std::printf ("re-encode  %zu of %zu differ from the bytes on disk\n", badReencode, presets.size());
++    std::printf ("protobuf    %zu of %zu not canonical\n", nonCanonical, presets.size());
+     for (const auto& e : errors) std::printf ("  ERROR %s\n", e.c_str());
+ 
+-    return errors.empty() && badCrc == 0 && ! presets.empty() ? 0 : 1;
++    const bool ok = errors.empty() && badCrc == 0 && badReencode == 0
++                    && nonCanonical == 0 && ! presets.empty();
++    std::printf ("%s\n", ok ? "PASS verify" : "FAIL verify");
++    return ok ? 0 : 1;
+ }
+ 
+ int cmdList (const Options& o)
+@@ -286,6 +307,15 @@
+         all.insert (all.end(), v.begin(), v.end());
+     }
+     if (all.empty()) { std::fprintf (stderr, "nothing to merge\n"); return 1; }
++    // Order by (page, bank, program) so split -> merge reproduces the original dump
++    // byte for byte. Sorting by filename is not enough: it puts factory_* before
++    // user_*, which is the opposite of what the device sends.
++    std::stable_sort (all.begin(), all.end(), [] (const Preset& a, const Preset& b)
++    {
++        if (a.address().page != b.address().page) return a.address().page < b.address().page;
++        if (a.address().bank != b.address().bank) return a.address().bank < b.address().bank;
++        return a.address().program < b.address().program;
++    });
+     std::string werr;
+     if (! exportSyxFile (out, all, werr)) { std::fprintf (stderr, "%s\n", werr.c_str()); return 1; }
+     std::printf ("wrote %s with %zu presets\n", out.c_str(), all.size());
+@@ -407,29 +437,75 @@
+     }
+ 
+     void reset() { std::lock_guard<std::mutex> lock (mutex_); incoming_.clear(); }
++
++    /** Send the vendor's documented full-dump request and collect every preset frame
++        the device answers with, stopping after `quietMs` of silence.
++
++        This is the ONLY reliable way to read device state. Measured on the operator's
++        unit (exchange/L4.review-device-protocol.md, measurement 1): the device sends
++        NOTHING after a preset frame, whether FF=0x01 (write) or FF=0x00 (load), so any
++        "send a load and wait for the echo" read times out by construction. The dump
++        request, by contrast, answers with 78 frames in 5 s and all 98 in about 9 s.
++        Returns the number of presets collected; `error` is set only on a send failure. */
++    size_t requestFullDump (int maxMs, int quietMs, std::vector<Preset>& out, std::string& error)
++    {
++        static const std::vector<uint8_t> request { 0xF0, 0x00, 0x21, 0x35, 0x00, 0x06, 0x02, 0xF7 };
++        reset();
++        if (! port_.sendSysEx (request, &error)) return 0;
+ 
++        const auto start = std::chrono::steady_clock::now();
++        auto lastFrame = start;
++        const auto deadline = start + std::chrono::milliseconds (maxMs);
++
++        while (std::chrono::steady_clock::now() < deadline)
++        {
++            Preset p;
++            std::string ignored;
++            if (awaitPreset (p, 50, ignored)) { out.push_back (p); lastFrame = std::chrono::steady_clock::now(); }
++            else if (! out.empty()
++                     && std::chrono::steady_clock::now() - lastFrame > std::chrono::milliseconds (quietMs))
++                break;   // the device has stopped talking; the dump is complete
++            std::this_thread::sleep_for (std::chrono::milliseconds (5));
++        }
++        return out.size();
++    }
++
+ private:
+     MidiPort port_;
+     std::mutex mutex_;
+     std::vector<std::vector<uint8_t>> incoming_;
+ };
+ 
+-/** Read a slot by asking the device to LOAD it: the load frame is the same preset
+-    frame with the load flag (FF=0x00), and the device answers by transmitting the
+-    preset it just loaded (vendor V2 notes §1.4). That makes read a real round trip
+-    rather than a guess at the flash contents. */
+-bool readSlot (DeviceSession& session, Page page, Slot slot, Preset& out, int timeoutMs, std::string& error)
++/** Read one slot by requesting the full dump and selecting the frame whose
++    (page, bank, program) matches.
++
++    This replaced a "send a load frame and wait for the echo" implementation, which
++    could never work: the device does not echo presets (measured; see
++    exchange/L4.review-device-protocol.md). A load frame sent to a slot that holds a
++    valid preset does still make the synth load it — it just never reports back — so
++    the old path both failed and left the device silently auditioning a preset. */
++bool readSlot (DeviceSession& session, Page page, Slot slot, Preset& out,
++               std::string& error, int maxMs = 15000, int quietMs = 2000)
+ {
+-    Preset request;
+-    request.setAddress (slot.toAddress (page));
++    std::vector<Preset> dump;
++    const size_t received = session.requestFullDump (maxMs, quietMs, dump, error);
++    if (received == 0)
++    {
++        if (error.empty())
++            error = "the device sent nothing after the full-dump request (is it in a menu?";
++        if (error.empty()) error = "no frames received";
++        return false;
++    }
+ 
+-    std::string err;
+-    const auto frame = encodeForDevice (request, /*persist*/ false, false, &err);
+-    if (frame.empty()) { error = err.empty() ? "could not encode the load frame" : err; return false; }
++    const uint8_t wantPage = static_cast<uint8_t> (page);
++    for (const auto& p : dump)
++        if (p.address().page == wantPage && p.address().bank == slot.bank
++            && p.address().program == slot.program)
++        { out = p; return true; }
+ 
+-    session.reset();
+-    if (! session.port().sendSysEx (frame, &error)) return false;
+-    return session.awaitPreset (out, timeoutMs, error);
++    error = "slot " + slot.toString() + " was not in the dump (" + std::to_string (received)
++          + " frames received)";
++    return false;
+ }
+ 
+ int cmdDevices()
+@@ -478,7 +554,7 @@
+     std::printf ("port      %s\n", session.name().c_str());
+ 
+     Preset p;
+-    if (! readSlot (session, Page::User, slot, p, 3000, error))
++    if (! readSlot (session, Page::User, slot, p, error))
+     { std::fprintf (stderr, "read failed: %s\n", error.c_str()); return 1; }
+ 
+     std::printf ("%s\n", summaryLine (p).c_str());
+@@ -524,9 +600,9 @@
+ 
+     std::printf ("plan\n");
+     std::printf ("  slot      USER %s\n", slot.toString().c_str());
+-    std::printf ("  source    %s (%s, payload %zu B)\n", o.positional[0].c_str(),
++    std::printf ("  source    %s (originally %s, payload %zu B)\n", o.positional[0].c_str(),
+                  displayName (toWrite).c_str(), toWrite.payloadSize());
+-    std::printf ("  steps     read original -> write -> read back -> compare -> restore -> verify\n");
++    std::printf ("  steps     dump-read original -> write -> dump-read back -> compare -> restore -> verify\n");
+ 
+     if (! o.has ("--yes"))
+     {
+@@ -540,7 +616,7 @@
+     std::printf ("port      %s\n", session.name().c_str());
+ 
+     Preset original;
+-    if (! readSlot (session, Page::User, slot, original, 3000, error))
++    if (! readSlot (session, Page::User, slot, original, error))
+     {
+         std::fprintf (stderr, "could not read the slot's original contents (%s); refusing to write a "
+                               "slot I cannot restore\n", error.c_str());
+@@ -554,10 +630,11 @@
+     { std::fprintf (stderr, "write failed: %s\n", error.c_str()); return 1; }
+     std::printf ("write     sent (FF=01, AA=00, %s)\n", slot.toString().c_str());
+ 
+-    // Read back and compare payload bytes verbatim.
++    // Read back and compare payload bytes verbatim. The device does not echo the
++    // write, so this re-dumps and picks the slot out of the dump.
+     bool identical = false;
+     Preset back;
+-    if (readSlot (session, Page::User, slot, back, 3000, error))
++    if (readSlot (session, Page::User, slot, back, error))
+     {
+         identical = back.payloadSize() == toWrite.payloadSize()
+                  && std::memcmp (back.payload().data(), toWrite.payload().data(), toWrite.payloadSize()) == 0;
+@@ -598,7 +675,7 @@
+     }
+ 
+     Preset restored;
+-    const bool restoredOk = readSlot (session, Page::User, slot, restored, 3000, error)
++    const bool restoredOk = readSlot (session, Page::User, slot, restored, error)
+                          && restored.payloadSize() == original.payloadSize()
+                          && std::memcmp (restored.payload().data(), original.payload().data(),
+                                          original.payloadSize()) == 0;
+@@ -623,12 +700,18 @@
+     std::fflush (stdout);
+ 
+     std::vector<Preset> captured;
+-    session.drain (seconds * 1000, captured);
++    // Collect until the device goes quiet rather than trusting --seconds: measured,
++    // 78 of 98 frames arrive in 5 s and the rest by ~9 s, so a fixed short window
++    // silently truncates the dump.
++    session.requestFullDump (std::max (seconds, 1) * 1000, 2500, captured, error);
+ 
+     if (captured.empty()) { std::fprintf (stderr, "nothing received\n"); return 1; }
+     std::string werr;
+     if (! exportSyxFile (out, captured, werr)) { std::fprintf (stderr, "%s\n", werr.c_str()); return 1; }
+     std::printf ("captured  %zu presets -> %s\n", captured.size(), out.c_str());
++    if (captured.size() < 98)
++        std::fprintf (stderr, "warning: a full unit holds 98; %zu means the dump was truncated or the "
++                              "unit is not answering completely (try --seconds 20)\n", captured.size());
+     return 0;
+ }
+ 
+@@ -683,8 +766,49 @@
+     std::printf ("sent      all-sound-off + all-notes-off on channel %d\n", channel + 1);
+     return 0;
+ }
++
++} // namespace
++
++#if defined(NYMPHES_HAS_FLOCK)
++namespace
++{
++/** Exclusive advisory lock on the fleet's MIDI lock file, taken in-process.
++
++    The brief asks for `flock(1)` around every device session, but macOS ships no
++    `flock` binary (verified on this host), so shelling out is not available. This
++    takes the same lock with flock(2) on the same file, which is what every other
++    process in this fleet does. It is non-blocking on purpose: a busy lock means
++    another lane is mid-session and the right answer is to say so, not to queue.
++
++    The lock is taken before the MIDI port is opened and released when this object
++    dies, i.e. when the process exits. */
++class MidiLock
++{
++public:
++    ~MidiLock()
++    {
++        if (fd_ >= 0) { ::flock (fd_, LOCK_UN); ::close (fd_); }
++    }
++
++    bool acquire (const std::string& path, std::string& error)
++    {
++        fd_ = ::open (path.c_str(), O_RDWR | O_CREAT, 0644);
++        if (fd_ < 0) { error = "cannot open lock file " + path; return false; }
++        if (::flock (fd_, LOCK_EX | LOCK_NB) != 0)
++        {
++            error = "the MIDI lock is held by another process (" + path + ")";
++            ::close (fd_);
++            fd_ = -1;
++            return false;
++        }
++        return true;
++    }
+ 
++private:
++    int fd_ = -1;
++};
+ } // namespace
++#endif
+ 
+ int main (int argc, char** argv)
+ {
+@@ -693,6 +817,42 @@
+     const std::string cmd = argv[1];
+     const Options o = parse (argc, argv, 2);
+ 
++    // Device sessions must hold the fleet lock. `devices` only enumerates
++    // endpoints, so it needs none; everything that opens the port does.
++    const bool isDeviceCommand = cmd == "read" || cmd == "write" || cmd == "capture"
++                                 || cmd == "dump-request" || cmd == "cc" || cmd == "panic";
++#if defined(NYMPHES_HAS_FLOCK)
++    MidiLock lock;
++    if (isDeviceCommand)
++    {
++        const std::string lockPath = o.get ("--lock");
++        if (lockPath.empty())
++        {
++            std::fprintf (stderr,
++                "%s: device commands need --lock <file>; every MIDI session must hold an\n"
++                "exclusive lock. The brief says `flock(1)`, but macOS has no flock binary,\n"
++                "so this takes the same lock in-process:\n"
++                "  nymphes-cli %s %s --lock vendor/midi.lock\n",
++                cmd.c_str(), cmd.c_str(),
++                o.positional.empty() ? "" : o.positional.front().c_str());
++            return 2;
++        }
++        std::string lockError;
++        if (! lock.acquire (lockPath, lockError))
++        {
++            std::fprintf (stderr, "%s\n", lockError.c_str());
++            return 3;
++        }
++    }
++#else
++    if (isDeviceCommand)
++    {
++        std::fprintf (stderr, "%s: this build has no file locking; refusing a device session\n",
++                      cmd.c_str());
++        return 2;
++    }
++#endif
++
+     if (cmd == "devices")      return cmdDevices();
+     if (cmd == "ccmap")        return cmdCCMap();
+     if (cmd == "verify")       return cmdVerify (o);

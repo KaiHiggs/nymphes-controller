@@ -1,0 +1,11 @@
+vendor/
+.venv/
+evidence/ghidra/
+*.r2
+build/
+build-*/
+*.vst3
+*.app
+.pi/
+.DS_Store
+notes/ui-before/nymphes-reference.jpg

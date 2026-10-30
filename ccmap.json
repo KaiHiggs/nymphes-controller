@@ -1,0 +1,1542 @@
+{
+  "map_version": "1.0.0",
+  "count": 82,
+  "sources": {
+    "nymphes-osc": {
+      "path": "reference/nymphes-osc/src/nymphes_midi/NymphesPreset.py",
+      "sha256": "b4a1a3f911140e1726944d48665a3091c9195907f5e5fbb4d3ce2800263a3b4b",
+      "distinct_ccs": 79
+    },
+    "nymphescc": {
+      "path": "reference/nymphescc/nymphescc/messages.dhall",
+      "sha256": "c36fa563e3cf6c4f541e3ca829148c2fa251874a0492ac60b6e614f963c832e6",
+      "ccs_with_metadata": 44
+    },
+    "midi.guide": {
+      "url": "https://midi.guide/d/dreadbox/nymphes/",
+      "ccs": 82,
+      "fetched": "2026-10-30"
+    }
+  },
+  "reconciliation": {
+    "ccs_only_in_midi_guide": [
+      1,
+      30,
+      64
+    ],
+    "ccs_only_in_nymphes_osc": [],
+    "cc38_present": false,
+    "note": "CC 38 is absent from every source; the modulation-depth run is 31-37 then 39-63, so 38 is a genuine gap, not a hole in this table. The three CCs only midi.guide lists are the ones the modulation matrix shares rather than owning: 1 (mod wheel, an input), 30 (modulation-source selector) and 64 (sustain pedal)."
+  },
+  "modulation_model": {
+    "selector_cc": 30,
+    "sources": [
+      "LFO 2",
+      "MOD WHEEL",
+      "VELOCITY",
+      "AFTERTOUCH"
+    ],
+    "shared_depth_ccs": [
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      86,
+      87,
+      88,
+      89
+    ],
+    "note": "The depth CCs are shared by all four modulation sources and reinterpreted according to CC 30. A controller UI must show which source is selected or a depth edit is ambiguous."
+  },
+  "cross_check": {
+    "basic_inputs_cc_order": [
+      70,
+      9,
+      10,
+      11,
+      13,
+      74,
+      71,
+      3,
+      79,
+      80,
+      82,
+      83,
+      18,
+      19,
+      12,
+      5,
+      15,
+      16,
+      14,
+      81,
+      4,
+      8,
+      73,
+      84,
+      85,
+      72,
+      20,
+      21
+    ],
+    "all_28_present_in_map": true,
+    "source": "prior/L1-firmware.md section 4 (decoded preset protobuf order)"
+  },
+  "provenance": "Merged from three public sources; no entry was read out of the firmware image, because prior/L2-firmware.md section 6 establishes that the CC dispatch table is not in the application region.",
+  "params": [
+    {
+      "cc": 1,
+      "name": "Mod wheel",
+      "group": "General",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide"
+      ]
+    },
+    {
+      "cc": 3,
+      "name": "LPF EG depth",
+      "group": "Filter",
+      "section": "filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Sets how much the filter envelope modulates the filter cutoff.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 4,
+      "name": "LPF tracking",
+      "group": "Filter",
+      "section": "filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Sets how much the filter cutoff tracks the frequency of the main oscillator. At 127 the cutoff frequncy tracks the oscillator pitch 1:1. In combination with high resonance this can create beautiful overtones. If you set this to other fractions (e.g. 63 for quarter tones), use only noise as a sound source, and beef up resonance, you can play microtonal music!",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 5,
+      "name": "Glide",
+      "group": "General",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Allow notes to glide (portamento). The behaviour strongly depends on the playing mode. Optionally, glide will respond to legato playing.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 7,
+      "name": "Amp level",
+      "group": "Amp",
+      "section": "misc",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Amplification, set to default 127.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 8,
+      "name": "LFO cutoff depth",
+      "group": "Filter",
+      "section": "filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Sets how much LFO 1 modulates the filter frequency cutoff.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 9,
+      "name": "Oscillator level",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Sets the amplitude of the wave form.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 10,
+      "name": "Sub level",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Amplitude of sub-oscillator, which produces a square wave one octave below the main oscillator.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 11,
+      "name": "Noise level",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Amplitude of white noise, mixed in with main oscillator and sub-oscillator.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 12,
+      "name": "Pulse width",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Control the pulse width of the square wave form. This can be modulated using LFO 2.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 13,
+      "name": "LFO pitch depth",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Control the change in pitch of the main oscillator with the LFO, from subtle vibrato to extreme whoopy sounds.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 14,
+      "name": "EG pitch depth",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Control how much the filter envelope modulates the pitch of the oscillator. Envelopes are unipolar.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 15,
+      "name": "Detune",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Detune notes when in stacked modes (i.e. multiple oscillators per node: UNI A, UNI B, TRI, DUO).",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 16,
+      "name": "Chord selector",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Choose from different predefined chords (see Chords tab).",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 17,
+      "name": "Play mode",
+      "group": "General",
+      "section": "misc",
+      "min": 0,
+      "max": 5,
+      "labels": [
+        "POLY",
+        "UNI A",
+        "UNI B",
+        "TRI",
+        "DUO",
+        "MONO"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 18,
+      "name": "LFO 1 rate",
+      "group": "LFO 1",
+      "section": "lfo.lfo-1",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 19,
+      "name": "LFO 1 wave",
+      "group": "LFO 1",
+      "section": "lfo.lfo-1",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 20,
+      "name": "LFO 1 delay",
+      "group": "LFO 1",
+      "section": "lfo.lfo-1",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 21,
+      "name": "LFO 1 fade",
+      "group": "LFO 1",
+      "section": "lfo.lfo-1",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 22,
+      "name": "LFO 1 type",
+      "group": "LFO 1",
+      "section": "lfo.lfo-1",
+      "min": 0,
+      "max": 3,
+      "labels": [
+        "BPM",
+        "LOW",
+        "HIGH",
+        "TRACK"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 23,
+      "name": "LFO 1 key sync",
+      "group": "LFO 1",
+      "section": "lfo.lfo-1",
+      "min": 0,
+      "max": 1,
+      "labels": [
+        "OFF",
+        "ON"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 24,
+      "name": "LFO 2 rate",
+      "group": "LFO 2",
+      "section": "lfo.lfo-2",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 25,
+      "name": "LFO 2 wave",
+      "group": "LFO 2",
+      "section": "lfo.lfo-2",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 26,
+      "name": "LFO 2 delay",
+      "group": "LFO 2",
+      "section": "lfo.lfo-2",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 27,
+      "name": "LFO 2 fade",
+      "group": "LFO 2",
+      "section": "lfo.lfo-2",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 28,
+      "name": "LFO 2 type",
+      "group": "LFO 2",
+      "section": "lfo.lfo-2",
+      "min": 0,
+      "max": 3,
+      "labels": [
+        "BPM",
+        "LOW",
+        "HIGH",
+        "TRACK"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 29,
+      "name": "LFO 2 key sync",
+      "group": "LFO 2",
+      "section": "lfo.lfo-2",
+      "min": 0,
+      "max": 1,
+      "labels": [
+        "OFF",
+        "ON"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 30,
+      "name": "Modulation source selector",
+      "group": "Modulation",
+      "section": "modulators",
+      "min": 0,
+      "max": 3,
+      "labels": [
+        "LFO 2",
+        "MOD WHEEL",
+        "VELOCITY",
+        "AFTERTOUCH"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 31,
+      "name": "MS OSC wave depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 32,
+      "name": "MS OSC level depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 33,
+      "name": "MS SUB level depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 34,
+      "name": "MS noise level depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 35,
+      "name": "MS LFO pitch depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 36,
+      "name": "MS pulse width depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 37,
+      "name": "MS glide depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 39,
+      "name": "MS detune depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 40,
+      "name": "MS chord selector depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 41,
+      "name": "MS EG pitch depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 42,
+      "name": "MS LPF cutoff depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 43,
+      "name": "MS resonance depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 44,
+      "name": "MS LPF EG depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 45,
+      "name": "MS HPF cutoff depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 46,
+      "name": "MS LPF tracking depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 47,
+      "name": "MS LPF cutoff LFO depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 48,
+      "name": "MS filter EG attack depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 49,
+      "name": "MS filter EG decay depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 50,
+      "name": "MS filter EG sustain depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 51,
+      "name": "MS filter EG release depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 52,
+      "name": "MS amp EG attack depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 53,
+      "name": "MS amp EG decay depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 54,
+      "name": "MS amp EG sustain depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 55,
+      "name": "MS amp EG release depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 56,
+      "name": "MS LFO 1 rate depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 57,
+      "name": "MS LFO 1 wave depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 58,
+      "name": "MS LFO 1 delay depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 59,
+      "name": "MS LFO 1 fade depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 60,
+      "name": "MS LFO 2 rate depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 61,
+      "name": "MS LFO 2 wave depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 62,
+      "name": "MS LFO 2 delay depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 63,
+      "name": "MS LFO 2 fade depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 64,
+      "name": "Sustain pedal",
+      "group": "General",
+      "section": null,
+      "min": 0,
+      "max": 1,
+      "labels": [
+        "OFF",
+        "ON"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide"
+      ]
+    },
+    {
+      "cc": 68,
+      "name": "Legato",
+      "group": "General",
+      "section": "misc",
+      "min": 0,
+      "max": 1,
+      "labels": [
+        "OFF",
+        "ON"
+      ],
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 70,
+      "name": "OSC wave",
+      "group": "Oscillator",
+      "section": "oscillator",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": [
+        {
+          "label": "⩘",
+          "value": 0
+        },
+        {
+          "label": "⎍",
+          "value": 63
+        },
+        {
+          "label": "⋀",
+          "value": 127
+        }
+      ],
+      "description": "Controls the shape of the generated wave, going from sawtooth through square, to triangle waves.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 71,
+      "name": "Resonance",
+      "group": "Filter",
+      "section": "filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": "Sets the amount of filter resonance, i.e. how much upper frequencies are amplified.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 72,
+      "name": "Amp EG release",
+      "group": "Amp",
+      "section": "envelope.amplitude",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 73,
+      "name": "Amp EG attack",
+      "group": "Amp",
+      "section": "envelope.amplitude",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 74,
+      "name": "LPF cutoff",
+      "group": "Filter",
+      "section": "filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": [
+        {
+          "label": "33 hZ",
+          "value": 0
+        },
+        {
+          "label": "",
+          "value": 63
+        },
+        {
+          "label": "17 khZ",
+          "value": 127
+        }
+      ],
+      "description": "Sets the cutoff frequency of the lopass filter.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 75,
+      "name": "Reverb size",
+      "group": "Reverb",
+      "section": "reverb",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 76,
+      "name": "Reverb decay",
+      "group": "Reverb",
+      "section": "reverb",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 77,
+      "name": "Reverb filter",
+      "group": "Reverb",
+      "section": "reverb",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 78,
+      "name": "Reverb mix",
+      "group": "Reverb",
+      "section": "reverb",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 79,
+      "name": "Filter EG attack",
+      "group": "Filter",
+      "section": "envelope.filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 80,
+      "name": "Filter EG decay",
+      "group": "Filter",
+      "section": "envelope.filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 81,
+      "name": "HPF cutoff",
+      "group": "Filter",
+      "section": "filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": [
+        {
+          "label": "33 hZ",
+          "value": 0
+        },
+        {
+          "label": "",
+          "value": 63
+        },
+        {
+          "label": "17 khZ",
+          "value": 127
+        }
+      ],
+      "description": "Sets the cutoff frequency of the hipass filter. Hipass is piped after lopass, creating a bandpass.",
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 82,
+      "name": "Filter EG sustain",
+      "group": "Filter",
+      "section": "envelope.filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 83,
+      "name": "Filter EG release",
+      "group": "Filter",
+      "section": "envelope.filter",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 84,
+      "name": "Amp EG decay",
+      "group": "Amp",
+      "section": "envelope.amplitude",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 85,
+      "name": "Amp EG sustain",
+      "group": "Amp",
+      "section": "envelope.amplitude",
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": false,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc",
+        "nymphescc"
+      ]
+    },
+    {
+      "cc": 86,
+      "name": "MS reverb size depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 87,
+      "name": "MS reverb decay depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 88,
+      "name": "MS reverb filter depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    },
+    {
+      "cc": 89,
+      "name": "MS reverb mix depth",
+      "group": "Modulation",
+      "section": null,
+      "min": 0,
+      "max": 127,
+      "labels": null,
+      "tics": null,
+      "description": null,
+      "isModDepth": true,
+      "provenance": [
+        "midi.guide",
+        "nymphes-osc"
+      ]
+    }
+  ]
+}

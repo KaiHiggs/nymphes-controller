@@ -1,0 +1,96 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            platform: macOS
+            configure: -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          - os: windows-2022
+            platform: Windows
+            configure: -A x64
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        shell: bash
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.configure }}
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Test
+        shell: bash
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Check the VST3 manifest is strict JSON
+        shell: bash
+        run: |
+          f=build/NymphesController_artefacts/Release/VST3/NymphesController.vst3/Contents/Resources/moduleinfo.json
+          py=$(command -v python3 || command -v python)
+          "$py" -c "import json,sys; d=json.load(open(sys.argv[1])); print('moduleinfo.json ok,', len(d['Classes']), 'classes')" "$f"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          art=build/NymphesController_artefacts/Release
+          mkdir -p dist
+          lipo -info "$art/VST3/NymphesController.vst3/Contents/MacOS/NymphesController"
+          codesign --verify --strict "$art/VST3/NymphesController.vst3"
+          ditto -c -k --keepParent "$art/VST3/NymphesController.vst3"     dist/NymphesController-macOS-VST3.zip
+          ditto -c -k --keepParent "$art/Standalone/NymphesController.app" dist/NymphesController-macOS-Standalone.zip
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $art = "build/NymphesController_artefacts/Release"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$art/VST3/NymphesController.vst3"        -DestinationPath dist/NymphesController-Windows-VST3.zip
+          Compress-Archive -Path "$art/Standalone/NymphesController.exe"   -DestinationPath dist/NymphesController-Windows-Standalone.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NymphesController-${{ matrix.platform }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -l dist
+          gh release create "${GITHUB_REF_NAME}" dist/*.zip \
+            --title "Nymphes Controller ${GITHUB_REF_NAME}" \
+            --notes-file .github/RELEASE_NOTES.md
