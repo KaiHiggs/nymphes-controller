@@ -228,7 +228,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/core/src/Codec.cpp")
         target_link_libraries(nymphes-oracle PRIVATE nymphes_oracle_lib)
         set_target_properties(nymphes-oracle PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-        add_test(NAME nymphes-oracle COMMAND nymphes-oracle)
+        add_test(NAME nymphes-oracle COMMAND nymphes-oracle "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
         set_tests_properties(nymphes-oracle PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()

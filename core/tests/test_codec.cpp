@@ -120,6 +120,19 @@ int main(int argc, char** argv) {
               crc8(reinterpret_cast<const std::uint8_t*>("123456789"), 9));
     }
 
+    // Everything below needs the vendor dumps. Without them (a fresh clone, CI)
+    // this is a skip, not a failure: the codec is still exercised by the other
+    // tests, and the corpus is not ours to ship.
+    {
+        std::FILE* f = std::fopen(fac.c_str(), "rb");
+        if (f == nullptr) {
+            std::printf("SKIP  vendor corpus not found at %s (pass its directory as argv[1])\n"
+                        "%d checks passed, %d failed\n", dir.c_str(), gPass, gFail);
+            return gFail == 0 ? 0 : 1;
+        }
+        std::fclose(f);
+    }
+
     // ---- 1/2. both vendor dumps, all 147 frames, byte-exact re-encode
     std::vector<Preset> factory, user;
     std::string err;
