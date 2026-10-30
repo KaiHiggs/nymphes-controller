@@ -4,8 +4,6 @@ A VST3 plug-in and standalone app for the **Dreadbox Nymphes**: every MIDI CC
 parameter on a panel laid out like the instrument, and a preset browser for the
 98 preset slots.
 
-> Unofficial. Not affiliated with or endorsed by Dreadbox. "Nymphes" and
-> "Dreadbox" are their trademarks.
 
 ![Controls](notes/ui-after/controls.png)
 
