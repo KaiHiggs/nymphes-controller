@@ -293,4 +293,10 @@ if (APPLE)
     add_custom_command(TARGET NymphesController_VST3 POST_BUILD
         COMMAND codesign --force --sign - ${NYMPHES_VST3_BUNDLE}
         VERBATIM)
+    # The linker signs only the standalone's executable; seal the whole .app so a
+    # downloaded copy verifies as a bundle too.
+    get_target_property(NYMPHES_APP_BUNDLE NymphesController_Standalone JUCE_PLUGIN_ARTEFACT_FILE)
+    add_custom_command(TARGET NymphesController_Standalone POST_BUILD
+        COMMAND codesign --force --sign - ${NYMPHES_APP_BUNDLE}
+        VERBATIM)
 endif()

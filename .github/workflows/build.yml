@@ -54,6 +54,7 @@ jobs:
           mkdir -p dist
           lipo -info "$art/VST3/NymphesController.vst3/Contents/MacOS/NymphesController"
           codesign --verify --strict "$art/VST3/NymphesController.vst3"
+          codesign --verify --strict "$art/Standalone/NymphesController.app"
           ditto -c -k --keepParent "$art/VST3/NymphesController.vst3"     dist/NymphesController-macOS-VST3.zip
           ditto -c -k --keepParent "$art/Standalone/NymphesController.app" dist/NymphesController-macOS-Standalone.zip
 
