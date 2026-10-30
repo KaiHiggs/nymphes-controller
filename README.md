@@ -1,4 +1,4 @@
-# Nymphes Controller
+# Dreadbox Nymphes Controller
 
 A VST3 plug-in and standalone app for the **Dreadbox Nymphes**: every MIDI CC
 parameter on a panel laid out like the instrument, and a preset browser for the
