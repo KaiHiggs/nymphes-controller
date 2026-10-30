@@ -93,6 +93,3 @@ tests/      CC map, preset safety, mod-edit pairing
 tools/      CC map reconciliation, UI capture helper
 docs/       build report and notes from how this was built
 ```
-
-The factory preset dumps and firmware are Dreadbox's files and are not in this
-repository. Tests that need them skip when they are absent.
