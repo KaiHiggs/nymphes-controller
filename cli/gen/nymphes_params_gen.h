@@ -2,6 +2,11 @@
 // Regenerate with: python3 tools/gen_cc_header.py
 // Verified current by: python3 tools/gen_cc_header.py --check
 //
+// NOTE: neither params/params.json nor tools/gen_cc_header.py is present in this
+// tree (cli/README.md used to claim otherwise). Until the generator is restored this
+// checked-in header is authoritative, so the compile-time integrity checks at the END
+// of the file live here; they belong in the generator once it comes back.
+//
 // The 82 MIDI CCs of the Dreadbox Nymphes, plus the 28-slot `basic_inputs`
 // float order and the preset frame constants.  Canonical data lives in
 // params/params.json; this header is derived from it.
@@ -10,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 
 namespace nymphes {
 namespace params {
@@ -244,5 +250,37 @@ inline const char* labelFor(const Param& p, int value) {
     if (value < p.min || value > p.max) return nullptr;
     return p.labels[value - p.min];
 }
+
+// ---- compile-time integrity checks -----------------------------------------
+// A table and its hand-written size constant, or two frame constants, disagreeing is
+// the failure mode this file has no runtime path for: every loop below trusts
+// kParamCount / kBasicInputCount, and the packing trusts the frame arithmetic. These
+// cost nothing at run time and fail the build instead of reading past a table.
+static_assert(std::size(kParams) == kParamCount,
+              "kParamCount must equal the number of entries in kParams");
+static_assert(std::size(kBasicInputs) == kBasicInputCount,
+              "kBasicInputCount must equal the number of entries in kBasicInputs");
+static_assert(kNibbleBytes == 2 * kPayloadBytes,
+              "two nibble bytes per payload byte");
+static_assert(kFrameBytes == kNibbleBytes + 11,
+              "frame = 10 header bytes (F0, 5 id, FF, AA, BB, PP) + nibbles + F7");
+static_assert(kSlotsPerPage == static_cast<std::size_t>(kBanks) *
+                                  static_cast<std::size_t>(kPrograms),
+              "slots per page = banks x programs");
+static_assert(kPageUser != kPageFactory && kFlagLoadOnly != kFlagWrite,
+              "the page bytes and the write-enable flag must stay distinguishable");
+
+// findCc()/findId() resolve to the FIRST match, so a duplicate CC or id from the
+// generator would silently attach a modulation route to the wrong parameter. kParams
+// is also sorted by CC, which is what makes a binary search a legal future change;
+// assert both so a generator change fails here instead of misrouting a CC.
+constexpr bool paramsAreSortedByUniqueCc() {
+    for (std::size_t i = 1; i < kParamCount; ++i)
+        if (kParams[i - 1].cc >= kParams[i].cc) return false;
+    return true;
+}
+static_assert(paramsAreSortedByUniqueCc(),
+              "kParams must be sorted by strictly increasing (hence unique) CC");
+
 }  // namespace params
 }  // namespace nymphes

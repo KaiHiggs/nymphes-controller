@@ -182,6 +182,20 @@ enable_testing()
 # ctest entry. One file per concern keeps a failure attributable and lets a lane add
 # a test without touching a shared main().
 nymphes_glob(NYMPHES_TEST_SOURCES tests)
+
+# The corpora live in the shared gate root, not in this tree, so the gate root is
+# handed to every test. This tree is <gate>/worktrees/<lane>, so the gate is two
+# levels up; -DNYMPHES_GATE_DIR=... overrides it. Decided ONCE, outside the loop:
+# `get_filename_component` below would otherwise define the variable and make every
+# later iteration believe the caller had set it explicitly.
+set(_gate_explicit FALSE)
+if (DEFINED NYMPHES_GATE_DIR)
+    set(_gate_explicit TRUE)
+else()
+    get_filename_component(NYMPHES_GATE_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+endif()
+
 foreach (_test_src ${NYMPHES_TEST_SOURCES})
     get_filename_component (_test_name "${_test_src}" NAME_WE)
     add_executable(${_test_name} "${_test_src}")
@@ -189,17 +203,23 @@ foreach (_test_src ${NYMPHES_TEST_SOURCES})
     target_include_directories(${_test_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     set_target_properties(${_test_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-    # The corpora live in the shared gate root, not in this tree, so the gate root
-    # is handed to every test. This tree is <gate>/worktrees/integration, so the gate
-    # is two levels up; -DNYMPHES_GATE_DIR=... overrides it.
-    if (NOT DEFINED NYMPHES_GATE_DIR)
-        get_filename_component(NYMPHES_GATE_DIR
-            "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+    # Only tell a test about a gate root that actually holds a corpus — with one
+    # exception: a root the caller named EXPLICITLY is always handed over, so a typo
+    # (-DNYMPHES_GATE_DIR=/wrong) fails loudly instead of silently skipping. A test
+    # that is given a root is strict: a configured-but-unreadable corpus is a
+    # FAILURE, not a green skip. With none it skips, which is the documented
+    # behaviour of a tree without the vendor dumps.
+    set(_gate_arg "")
+    if (_gate_explicit
+        OR EXISTS "${NYMPHES_GATE_DIR}/vendor/Nymphes_Factory_Presets_Factory_Bank.syx"
+        OR EXISTS "${NYMPHES_GATE_DIR}/evidence/L4-device/device_dump_run1.syx")
+        set(_gate_arg "${NYMPHES_GATE_DIR}")
+    else()
+        message(STATUS "Nymphes: ${_test_name} runs without a gate root (no corpus at ${NYMPHES_GATE_DIR})")
     endif()
-    target_compile_definitions(${_test_name} PRIVATE
-        NYMPHES_GATE_DIR="${NYMPHES_GATE_DIR}")
+    target_compile_definitions(${_test_name} PRIVATE NYMPHES_GATE_DIR="${_gate_arg}")
 
-    add_test(NAME ${_test_name} COMMAND ${_test_name} "${NYMPHES_GATE_DIR}")
+    add_test(NAME ${_test_name} COMMAND ${_test_name} ${_gate_arg})
     set_tests_properties(${_test_name} PROPERTIES
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endforeach()
@@ -232,6 +252,30 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/core/src/Codec.cpp")
         set_tests_properties(nymphes-oracle PROPERTIES
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     endif()
+endif()
+
+# =============================================================================
+# ccengine_test — the CC engine is JUCE (ChangeBroadcaster, MidiMessage, XmlElement),
+# so it cannot go through the JUCE-free tests/ glob above. One console target, no GUI
+# modules, same per-concern-one-executable rule.
+# =============================================================================
+
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/juce/ccengine_test.cpp")
+    juce_add_console_app(ccengine_test PRODUCT_NAME "ccengine_test")
+    target_sources(ccengine_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/juce/ccengine_test.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/plugin/cc/CCEngine.cpp")
+    target_include_directories(ccengine_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(ccengine_test PRIVATE
+        nymphes_core
+        juce::juce_audio_basics
+        juce::juce_events)
+    target_compile_definitions(ccengine_test PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0)
+    set_target_properties(ccengine_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    add_test(NAME ccengine_test COMMAND ccengine_test)
 endif()
 
 # =============================================================================

@@ -95,6 +95,7 @@ private:
     std::array<Print, PresetBank::kSize> prints {};
 
     std::unique_ptr<juce::FileChooser> chooser;
+    bool chooserBusy = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BrowserPanel)
 };

@@ -14,8 +14,10 @@
 
 #include "nymphes/Codec.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -46,7 +48,8 @@ static std::string hexn(const Bytes& b, std::size_t n = 16) {
 }
 
 static Bytes rawFrames(const std::string& path) {
-    // read the file bytes then split, so we compare against the on-disk frames
+    // Re-parse the file with the codec and re-encode every preset, so we compare
+    // decode->encode fidelity against the on-disk frames
     std::vector<Preset> ps;
     std::string err;
     if (!Preset::readSyx(path, ps, &err)) {
@@ -63,15 +66,16 @@ static Bytes rawFrames(const std::string& path) {
 }
 
 static Bytes slurp(const std::string& path) {
-    std::vector<Preset> ps;
-    std::string err;
     Bytes blob;
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return blob;
+    std::unique_ptr<FILE, decltype (&std::fclose)> f (std::fopen (path.c_str(), "rb"), &std::fclose);
+    if (!f) {
+        std::printf("FAIL cannot open %s\n", path.c_str());
+        ++gFail;
+        return blob;
+    }
     std::uint8_t buf[4096];
     std::size_t n;
-    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) blob.insert(blob.end(), buf, buf + n);
-    std::fclose(f);
+    while ((n = std::fread(buf, 1, sizeof buf, f.get())) > 0) blob.insert(blob.end(), buf, buf + n);
     return blob;
 }
 
@@ -157,7 +161,7 @@ int main(int argc, char** argv) {
     CHECK(rawFrames(fac) == facBlob, "factory .syx is not byte-reproducible");
     CHECK(rawFrames(usr) == usrBlob, "user .syx is not byte-reproducible");
 
-    if (facFrames.empty() || usrFrames.empty()) {
+    if (facFrames.empty() || usrFrames.empty() || factory.empty() || user.size() < 2) {
         std::printf("FAIL no vendor frames decoded - cannot continue\n");
         return 1;
     }
@@ -195,7 +199,7 @@ int main(int argc, char** argv) {
         CHECK(c && c->page == kPageUser && c->bank == 7 && c->program == 7, "parse G7");
         CHECK(!Address::parse("H3"), "H3 must be rejected");
         CHECK(!Address::parse("A8"), "A8 must be rejected");
-        CHECK(a->name() == "userD5" && b->name() == "factoryA1", "name round trip");
+        CHECK(a && b && a->name() == "userD5" && b->name() == "factoryA1", "name round trip");
     }
 
     // ---- 5. a real edit: same field, one byte changed, CRC still valid, tree canonical
@@ -288,11 +292,17 @@ int main(int argc, char** argv) {
         bad[bad.size() - 1] = 0x00;
         CHECK(!Preset::decodeFrame(bad.data(), bad.size(), p, &e), "frame without F7 accepted");
         bad = f;
-        bad[500] = 0x7F;  // nibble above 0x0F
-        CHECK(!Preset::decodeFrame(bad.data(), bad.size(), p, &e), "nibble 0x7f accepted");
+        CHECK(bad.size() > 500, "frame too short for the nibble test");
+        if (bad.size() > 500) {
+            bad[500] = 0x7F;  // nibble above 0x0F
+            CHECK(!Preset::decodeFrame(bad.data(), bad.size(), p, &e), "nibble 0x7f accepted");
+        }
         bad = f;
-        bad[20] ^= 0x01;  // payload bit flip -> CRC must catch it
-        CHECK(!Preset::decodeFrame(bad.data(), bad.size(), p, &e), "CRC mismatch accepted");
+        CHECK(bad.size() > 20, "frame too short for the CRC test");
+        if (bad.size() > 20) {
+            bad[20] ^= 0x01;  // payload bit flip -> CRC must catch it
+            CHECK(!Preset::decodeFrame(bad.data(), bad.size(), p, &e), "CRC mismatch accepted");
+        }
         bad.assign(f.begin(), f.end() - 1);
         CHECK(!Preset::decodeFrame(bad.data(), bad.size(), p, &e), "short frame accepted");
         CHECK(!Preset::decodeFrame(f.data(), 100, p, &e), "truncated frame accepted");

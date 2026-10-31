@@ -48,8 +48,15 @@ namespace nymphes
 
 // Convenience constants mirroring core/Codec.h so call sites that were written
 // against the older naming keep working.
+//
+// CANONICAL/VENDOR SIZES ONLY. Live V2.1 frames are variable length: payloads from 1049
+// up to ~1156 bytes, because the trailing slots of the extra_* sections are optional and
+// a negative chord varint takes 10 bytes. Never size a receive buffer with these -
+// use Preset::payloadSize()/frameSize() and validate against the bounds below.
 inline constexpr int kPayloadBytes = static_cast<int> (kPayloadSize);   // 1049, canonical
 inline constexpr int kFrameBytes   = static_cast<int> (kFrameSize);     // 2109, canonical
+inline constexpr int kMinPayloadBytes = static_cast<int> (kMinPayloadSize);   // receive floor
+inline constexpr int kMaxPayloadBytes = static_cast<int> (kMaxPayloadSize);   // receive ceiling
 inline constexpr int kHeaderBytes  = 10;
 inline constexpr int kSlotsPerPage = 49;                                // 7 banks x 7 programs
 
@@ -62,11 +69,17 @@ struct Slot
     uint8_t bank    = 1;
     uint8_t program = 1;
 
-    char bankLetter() const noexcept { return static_cast<char> ('A' + (bank - 1)); }
+    /** Bank letter A..G. An out-of-range slot has no letter: the guard keeps the
+        arithmetic from producing '@' (bank 0) or a letter past 'G'. */
+    char bankLetter() const noexcept
+    {
+        return isValid() ? static_cast<char> ('A' + (bank - 1)) : '?';
+    }
     std::string toString() const;
     static bool fromString (const std::string&, Slot&);      // "A1", "a7", " C 3 "
     bool isValid() const noexcept { return bank >= 1 && bank <= 7 && program >= 1 && program <= 7; }
-    int linearIndex() const noexcept { return (bank - 1) * 7 + (program - 1); }
+    /** 0..48 for a valid slot; -1 when the slot is not valid (no clamping). */
+    int linearIndex() const noexcept { return isValid() ? (bank - 1) * 7 + (program - 1) : -1; }
 
     static Slot fromAddress (const Address&);
     Address toAddress (Page) const;
@@ -92,12 +105,14 @@ bool decodeFrame (const uint8_t* data, size_t size, Preset& out, std::string* er
 std::vector<uint8_t> encodeFrame (const Preset&);
 
 /** Emit for the device: `persist` chooses FF=0x01 (write to memory) vs FF=0x00
-    (audition). A factory slot with persist=true is refused unless
-    `allowFactoryWrite` is set, which nothing in this tree does. */
+    (audition). A FACTORY slot with persist=true is refused: this facade never forwards
+    core's `allowFactoryWrite` escape hatch, and `allowFactoryWrite` is accepted only so
+    existing call sites keep compiling - it has no effect here. FACTORY is read-only. */
 std::vector<uint8_t> encodeForDevice (const Preset&, bool persist,
                                       bool allowFactoryWrite = false, std::string* error = nullptr);
 
 std::vector<Preset> importSyxFile (const std::string& path, std::string& error);
+/** `error` is cleared on success, so a reused string never carries a stale failure. */
 bool exportSyxFile (const std::string& path, const std::vector<Preset>& presets, std::string& error);
 
 /** Split a raw blob into frames (used for capture streams). */
@@ -124,14 +139,17 @@ struct FieldView
 {
     Group       group;
     int         subField;      // 1-based field number inside the section
-    const char* name;          // schema name, e.g. "cut", "amp_level"
+    const char* name;          // schema name, e.g. "cut", "amp_level", "f9"
     float       value;
     bool        discrete;      // UI hint: render as an enum/integer picker
 };
 
 /** Every named parameter present in the preset, in a stable order. Sections the
     payload does not carry are omitted rather than defaulted, because "absent" and
-    "zero" are different presets on this device. */
+    "zero" are different presets on this device.
+
+    `FieldView::name` points at a string literal (static storage) and lives for the
+    lifetime of the program; do not build it from a temporary std::string. */
 std::vector<FieldView> describe (const Preset&);
 
 bool getFloat (const Preset&, Group, int subField, float& out);
@@ -142,7 +160,8 @@ bool setInt (Preset&, Group, int subField, int64_t value);
 /** One-line description used by the CLI and the browser list. */
 std::string summaryLine (const Preset&);
 
-/** Voice-mode names, index 0..5 (poly, uni-6, uni-4, uni-3, uni-2, mono). */
+/** Voice-mode names, index 0..5 (poly, uni-6, uni-4, uni-3, uni-2, mono).
+    Out-of-range returns the non-null placeholder "?", never nullptr. */
 const char* voiceModeName (uint64_t mode);
 
 } // namespace nymphes

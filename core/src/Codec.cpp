@@ -3,8 +3,10 @@
 #include "nymphes/Codec.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cctype>
 #include <cstring>
 #include <fstream>
@@ -276,6 +278,10 @@ std::optional<Address> Address::parse(const std::string& in) {
     int prog = 0;
     for (std::size_t i = 1; i < s.size(); ++i) {
         if (s[i] < '0' || s[i] > '9') return std::nullopt;
+        // Reject as soon as the prefix cannot be a program number: an unchecked
+        // prog*10+digit overflows a signed int on a long address like
+        // "userA999999999999999999999" before the 1..7 check below is reached.
+        if (prog > 7) return std::nullopt;
         prog = prog * 10 + (s[i] - '0');
     }
     if (prog < 1 || prog > 7) return std::nullopt;
@@ -330,8 +336,12 @@ void Preset::setPayload(Bytes p) {
     msg_ = PbMessage{};
     canonical_ = false;
     edited_ = false;
-    if (payload_.size() > 1)
-        canonical_ = pbParse(payload_.data() + 1, payload_.size() - 1, msg_, 1);
+    if (payload_.size() > 1) {
+        const bool parsed = pbParse(payload_.data() + 1, payload_.size() - 1, msg_, 1);
+        // isCanonical() is a byte-identity claim (see the header), not "the parse
+        // succeeded": a parseable payload that re-encodes differently is not canonical.
+        canonical_ = parsed && pbEncode(msg_) == Bytes(payload_.begin() + 1, payload_.end());
+    }
 }
 
 void Preset::seal() {
@@ -395,11 +405,15 @@ namespace {
 
 bool Preset::hasSection(std::uint32_t top) const { return msg_.find(top) != nullptr; }
 
-static void resync(PbMessage& msg, Bytes& payload) {
-    Bytes body = pbEncode(msg);
-    payload.assign(1, 0);
-    payload.insert(payload.end(), body.begin(), body.end());
-    payload[0] = crc8(payload.data() + 1, payload.size() - 1);
+// Re-encode the in-memory tree into payload_ and refresh the derived flags. After
+// this, payload_ IS pbEncode(msg_) + CRC, so the preset is canonical by construction.
+void Preset::resync() {
+    Bytes body = pbEncode(msg_);
+    payload_.assign(1, 0);
+    payload_.insert(payload_.end(), body.begin(), body.end());
+    payload_[0] = crc8(payload_.data() + 1, payload_.size() - 1);
+    canonical_ = true;
+    edited_ = true;
 }
 
 static float readF32(const PbField* f) { return f ? bitsToFloat(f->bytes) : 0.0f; }
@@ -420,8 +434,7 @@ bool Preset::setBasic(std::uint32_t top, std::uint32_t slot, float value) {
     PbField* sec = msg_.find(top);
     if (!sec || !sec->hasSub) return false;
     if (!writeF32(sec->subFind(slot), value)) return false;
-    resync(msg_, payload_);
-    edited_ = true;
+    resync();
     return true;
 }
 
@@ -438,12 +451,12 @@ float Preset::ampLevel() const {
 }
 bool Preset::setAmpLevel(float v) {
     if (!writeF32(msg_.find(kAmpLevel), v)) return false;
-    resync(msg_, payload_);
-    edited_ = true;
+    resync();
     return true;
 }
 
 std::uint64_t Preset::chordInfo(std::uint32_t chord, std::uint32_t slot) const {
+    if (chord < 1 || chord > 8 || slot < 1 || slot > 6) return 0;
     const PbField* f = msg_.find(kChord1 + chord - 1);
     if (!f || !f->hasSub) return 0;
     const PbField* s = f->subFind(slot);
@@ -451,17 +464,20 @@ std::uint64_t Preset::chordInfo(std::uint32_t chord, std::uint32_t slot) const {
 }
 
 bool Preset::setChordInfo(std::uint32_t chord, std::uint32_t slot, std::uint64_t v) {
+    // Without this, chord 9 maps to kChord1 + 8 == kExtraLfo2 and writes a field
+    // that is not a chord at all; chord 0 maps to kChord1 - 1.
+    if (chord < 1 || chord > 8 || slot < 1 || slot > 6) return false;
     PbField* f = msg_.find(kChord1 + chord - 1);
     if (!f || !f->hasSub) return false;
     PbField* s = f->subFind(slot);
     if (!s) return false;
     s->varint = v;
-    resync(msg_, payload_);
-    edited_ = true;
+    resync();
     return true;
 }
 
 std::uint64_t Preset::lfoSetting(std::uint32_t slot) const {
+    if (slot < 1 || slot > 4) return 0;
     const PbField* f = msg_.find(kLfoSettings);
     if (!f || !f->hasSub) return 0;
     const PbField* s = f->subFind(slot);
@@ -469,13 +485,13 @@ std::uint64_t Preset::lfoSetting(std::uint32_t slot) const {
 }
 
 bool Preset::setLfoSetting(std::uint32_t slot, std::uint64_t v) {
+    if (slot < 1 || slot > 4) return false;
     PbField* f = msg_.find(kLfoSettings);
     if (!f || !f->hasSub) return false;
     PbField* s = f->subFind(slot);
     if (!s) return false;
     s->varint = v;
-    resync(msg_, payload_);
-    edited_ = true;
+    resync();
     return true;
 }
 
@@ -488,8 +504,7 @@ bool Preset::setLegato(bool on) {
     PbField* f = msg_.find(kLegato);
     if (!f) return false;
     f->varint = on ? 1 : 0;
-    resync(msg_, payload_);
-    edited_ = true;
+    resync();
     return true;
 }
 
@@ -502,8 +517,7 @@ bool Preset::setVoiceMode(std::uint64_t mode) {
     PbField* f = msg_.find(kVoiceMode);
     if (!f) return false;
     f->varint = mode;
-    resync(msg_, payload_);
-    edited_ = true;
+    resync();
     return true;
 }
 
@@ -634,8 +648,33 @@ std::string Preset::toText() const {
     return o.str();
 }
 
+// Non-throwing numeric conversions for the .txt path: fromText() reports failure
+// through bool + std::string*, so it must never let std::stoi/std::stoull/std::stof
+// escape as std::invalid_argument/std::out_of_range.
+static bool parseI64(const std::string& s, long long& out) {
+    if (s.empty()) return false;
+    errno = 0;
+    const char* b = s.c_str();
+    char* e = nullptr;
+    const long long v = std::strtoll(b, &e, 10);
+    if (e == b || e != b + s.size() || errno == ERANGE) return false;
+    out = v;
+    return true;
+}
+
+static bool parseF32(const std::string& s, float& out) {
+    if (s.empty()) return false;
+    errno = 0;
+    const char* b = s.c_str();
+    char* e = nullptr;
+    const float v = std::strtof(b, &e);
+    if (e == b || e != b + s.size() || errno == ERANGE) return false;
+    out = v;
+    return true;
+}
+
 bool Preset::fromText(const std::string& text, Preset& out, std::string* err) {
-    auto fail = [&](const char* m) {
+    auto fail = [&](const std::string& m) {
         if (err) *err = m;
         return false;
     };
@@ -658,8 +697,11 @@ bool Preset::fromText(const std::string& text, Preset& out, std::string* err) {
         }
         const std::string k = line.substr(0, eq), v = line.substr(eq + 1);
         if (k == "payload") payloadHex = v;
-        else if (k == "flag") flagByte = static_cast<std::uint8_t>(std::stoi(v));
-        else if (k == "address") {
+        else if (k == "flag") {
+            long long f = 0;
+            if (!parseI64(v, f) || f < 0 || f > 1) return fail("flag= must be 0 or 1");
+            flagByte = static_cast<std::uint8_t>(f);
+        } else if (k == "address") {
             auto a = Address::parse(v);
             if (!a) return fail("bad address");
             addr = *a;
@@ -667,17 +709,31 @@ bool Preset::fromText(const std::string& text, Preset& out, std::string* err) {
     }
     if (!sawHeader) return fail("missing nymphes-preset header");
     Bytes payload;
-    if (payloadHex.empty() || !unhex(payloadHex, payload) || payload.size() < kMinPayloadSize)
+    if (payloadHex.empty() || !unhex(payloadHex, payload))
         return fail("missing or malformed payload=");
+    // The payload is the ground truth, so validate it here the same way decodeFrame()
+    // validates a frame: a payload outside the wire size range, or one whose CRC-8
+    // byte does not verify, cannot be a valid preset and must not import as one.
+    if (payload.size() < kMinPayloadSize || payload.size() > kMaxPayloadSize)
+        return fail("payload= size outside the sane range");
+    if (payload[0] != crc8(payload.data() + 1, payload.size() - 1))
+        return fail("payload= CRC-8 mismatch");
     out.setPayload(std::move(payload));
     out.addr_ = addr;
     out.flag_ = flagByte;
     // Apply only the lines that actually differ from the payload, so an untouched
     // export re-imports to identical bytes even if the source was not canonical.
+    // trailingNumber() is the non-throwing "last integer in the name" reader used by
+    // the chord/lfo/extra keys; -1 means "no usable index".
     auto trailingNumber = [](const std::string& in) -> int {
         std::size_t i = 0;
         while (i < in.size() && (in[i] < '0' || in[i] > '9')) ++i;
-        return (i < in.size()) ? std::stoi(in.substr(i)) : 0;
+        int n = 0;
+        for (; i < in.size() && in[i] >= '0' && in[i] <= '9'; ++i) {
+            if (n > 9999) return -1;  // far past any slot index in this schema
+            n = n * 10 + (in[i] - '0');
+        }
+        return n;
     };
     auto sameFloat = [](float a, float b) {
         std::uint32_t x, y;
@@ -688,25 +744,38 @@ bool Preset::fromText(const std::string& text, Preset& out, std::string* err) {
     for (const auto& [k, v] : kv) {
         const auto dot = k.find('.');
         if (k == "legato") {
-            const bool want = std::stoi(v) != 0;
-            if (want != out.legato()) out.setLegato(want);
+            long long want = 0;
+            if (!parseI64(v, want)) return fail("legato= is not a number");
+            const bool on = want != 0;
+            if (on != out.legato() && !out.setLegato(on)) return fail("cannot apply legato");
         } else if (k == "voice_mode") {
-            const auto want = static_cast<std::uint64_t>(std::stoull(v));
-            if (want != out.voiceMode()) out.setVoiceMode(want);
+            long long want = 0;
+            if (!parseI64(v, want) || want < 0) return fail("voice_mode= is not a number");
+            const auto mode = static_cast<std::uint64_t>(want);
+            if (mode != out.voiceMode() && !out.setVoiceMode(mode))
+                return fail("cannot apply voice_mode");
         } else if (k == "amp_level") {
-            const float want = std::stof(v);
-            if (!sameFloat(want, out.ampLevel())) out.setAmpLevel(want);
+            float want = 0.0f;
+            if (!parseF32(v, want)) return fail("amp_level= is not a number");
+            if (!sameFloat(want, out.ampLevel()) && !out.setAmpLevel(want))
+                return fail("cannot apply amp_level");
         } else if (k.rfind("chord", 0) == 0 && dot != std::string::npos) {
             const int c = trailingNumber(k.substr(5, dot - 5));
             const int s = trailingNumber(k.substr(dot + 1));
-            const auto want = static_cast<std::uint64_t>(std::stoull(v));
-            if (c >= 1 && c <= 8 && s >= 1 && s <= 6 && out.chordInfo(c, s) != want)
-                out.setChordInfo(static_cast<std::uint32_t>(c), static_cast<std::uint32_t>(s), want);
+            long long want = 0;
+            if (c < 1 || c > 8 || s < 1 || s > 6) return fail("bad chord index in " + k);
+            if (!parseI64(v, want) || want < 0) return fail(k + "= is not a number");
+            const auto u = static_cast<std::uint64_t>(want);
+            if (out.chordInfo(c, s) != u && !out.setChordInfo(c, s, u))
+                return fail("cannot apply " + k);
         } else if (k.rfind("lfo_settings.", 0) == 0) {
             const int s = trailingNumber(k.substr(13));
-            const auto want = static_cast<std::uint64_t>(std::stoull(v));
-            if (s >= 1 && s <= 4 && out.lfoSetting(s) != want)
-                out.setLfoSetting(static_cast<std::uint32_t>(s), want);
+            long long want = 0;
+            if (s < 1 || s > 4) return fail("bad lfo_settings slot in " + k);
+            if (!parseI64(v, want) || want < 0) return fail(k + "= is not a number");
+            const auto u = static_cast<std::uint64_t>(want);
+            if (out.lfoSetting(s) != u && !out.setLfoSetting(s, u))
+                return fail("cannot apply " + k);
         } else if (dot != std::string::npos) {
             const std::string sec = k.substr(0, dot), name = k.substr(dot + 1);
             std::uint32_t top = 0;
@@ -724,14 +793,23 @@ bool Preset::fromText(const std::string& text, Preset& out, std::string* err) {
             std::uint32_t slot = 0;
             if (top == kExtraLfo2 || top == kExtraModWheel || top == kExtraVelocity ||
                 top == kExtraAftertouch) {
-                slot = static_cast<std::uint32_t>(trailingNumber(name));
+                const int n = trailingNumber(name);
+                if (n < 1) return fail("bad extra slot in " + k);
+                slot = static_cast<std::uint32_t>(n);
             } else {
                 for (std::uint32_t i = 1; i <= kBasicCount; ++i)
                     if (name == basicName(i)) slot = i;
             }
             if (slot == 0) return fail("unknown parameter name in preset text");
-            const float want = std::stof(v);
-            if (!sameFloat(want, out.basic(top, slot))) out.setBasic(top, slot, want);
+            float want = 0.0f;
+            if (!parseF32(v, want)) return fail(k + "= is not a number");
+            // A parameter line that disagrees with the payload is an edit; if the
+            // payload has no such section/field the edit cannot be applied, and the
+            // import must say so instead of returning true with nothing changed.
+            if (!sameFloat(want, out.basic(top, slot)) && !out.setBasic(top, slot, want))
+                return fail("cannot apply " + k);
+        } else {
+            return fail("unknown key in preset text: " + k);
         }
     }
     return true;

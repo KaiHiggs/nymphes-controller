@@ -15,11 +15,14 @@
 
 #include "preset/Preset.h"
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifndef NYMPHES_GATE_DIR
@@ -39,12 +42,17 @@ void check (bool ok, const std::string& what)
     }
 }
 
-std::vector<std::uint8_t> readFile (const std::string& path)
+// Returns false when the file cannot be opened or read. An empty file is a
+// success with an empty image — the caller distinguishes "wrong path / permission"
+// from "intentionally empty" instead of treating both as "nothing to check".
+bool readFile (const std::string& path, std::vector<std::uint8_t>& out)
 {
+    out.clear();
     std::ifstream in (path, std::ios::binary);
     if (! in)
-        return {};
-    return std::vector<std::uint8_t> ((std::istreambuf_iterator<char> (in)), {});
+        return false;
+    out.assign (std::istreambuf_iterator<char> (in), {});
+    return ! in.bad();
 }
 }
 
@@ -59,15 +67,22 @@ int main (int argc, char** argv)
         return 0;
     }
 
+    // From here on the corpora are CONFIGURED. A missing or unreadable file is a
+    // failure, not a skip: the old SKIP branches let a CI machine without the
+    // corpora report a green ctest run in which not one safety rule was exercised.
     const std::string live = gate + "/evidence/L4-device/device_dump_run1.syx";
     const std::string vendorFactory = gate + "/vendor/Nymphes_Factory_Presets_Factory_Bank.syx";
     const std::string vendorUser    = gate + "/vendor/Nymphes_Factory_Presets_User_Bank.syx";
 
     // --- 1. the live dump: real frames, 8 real lengths ------------------------
-    const auto liveImage = readFile (live);
-    if (liveImage.empty())
+    std::vector<std::uint8_t> liveImage;
+    const bool liveOk = readFile (live, liveImage);
+    check (liveOk, "configured live corpus is readable at " + live);
+    check (! liveOk || ! liveImage.empty(), "configured live corpus is not empty at " + live);
+    if (! liveOk || liveImage.empty())
     {
-        std::printf ("SKIP  live corpus not readable at %s\n", live.c_str());
+        // Continue: the factory/user blocks still run, and their failures are
+        // reported independently.
     }
     else
     {
@@ -124,10 +139,12 @@ int main (int argc, char** argv)
     }
 
     // --- 2. factory writes are refused, on a REAL factory frame ---------------
-    const auto factoryImage = readFile (vendorFactory);
-    if (factoryImage.empty())
+    std::vector<std::uint8_t> factoryImage;
+    const bool factoryOk = readFile (vendorFactory, factoryImage);
+    check (factoryOk, "configured factory corpus is readable at " + vendorFactory);
+    if (! factoryOk || factoryImage.empty())
     {
-        std::printf ("SKIP  vendor factory corpus not readable at %s\n", vendorFactory.c_str());
+        // configured but unusable: already recorded as a failure above.
     }
     else
     {
@@ -140,30 +157,41 @@ int main (int argc, char** argv)
         {
             Preset p;
             std::string err;
-            check (decodeFrame (frames[0].data(), frames[0].size(), p, &err),
-                   "the first vendor factory frame decodes");
+            const bool decoded = decodeFrame (frames[0].data(), frames[0].size(), p, &err);
+            check (decoded, "the first vendor factory frame decodes");
 
-            check (! p.address().isUser(), "a vendor factory frame reports the FACTORY page");
+            // Only assert the write guard on a preset that actually decoded: a
+            // default-constructed Preset is USER-addressed, so running these after
+            // a failed decode reported "does not report the FACTORY page" and
+            // "REFUSES a factory address", which points at the write guard instead
+            // of at the decode failure.
+            if (decoded)
+            {
+                check (! p.address().isUser(), "a vendor factory frame reports the FACTORY page");
 
-            const auto persisted = p.encodeFrame (true /* persist */, false, &err);
-            check (persisted.empty(),
-                   "encodeFrame(persist=true) REFUSES a factory address");
-            check (! err.empty(), "the factory refusal carries a reason");
+                const auto persisted = p.encodeFrame (true /* persist */, false, &err);
+                check (persisted.empty(),
+                       "encodeFrame(persist=true) REFUSES a factory address");
+                check (! err.empty(), "the factory refusal carries a reason");
 
-            // The same preset must still be encodable as an audition: the refusal is
-            // about writing, not about reading.
-            const auto audition = p.encodeAudition();
-            check (! audition.empty(), "encodeAudition() still works for a factory preset");
-            check (audition.size() > 6 && audition[6] == 0x00,
-                   "encodeAudition() sets FF=0x00");
+                // The same preset must still be encodable as an audition: the
+                // refusal is about writing, not about reading.
+                const auto audition = p.encodeAudition();
+                check (! audition.empty(), "encodeAudition() still works for a factory preset");
+                check (audition.size() > 6 && audition[0] == 0xF0
+                           && audition[6] == kFlagLoad,
+                       "encodeAudition() is a frame with FF=0x00 (kFlagLoad)");
+            }
         }
     }
 
     // --- 3. a USER address with the write flag is allowed ---------------------
-    const auto userImage = readFile (vendorUser);
-    if (userImage.empty())
+    std::vector<std::uint8_t> userImage;
+    const bool userOk = readFile (vendorUser, userImage);
+    check (userOk, "configured user corpus is readable at " + vendorUser);
+    if (! userOk || userImage.empty())
     {
-        std::printf ("SKIP  vendor user corpus not readable at %s\n", vendorUser.c_str());
+        // configured but unusable: already recorded as a failure above.
     }
     else
     {
@@ -172,7 +200,11 @@ int main (int argc, char** argv)
                "vendor user dump splits into 98 frames, got "
                    + std::to_string (frames.size()));
 
+        // Count every decodable USER frame, not just the first: `break` on the
+        // first match made the counter a boolean, so a run in which 97 of 98 frames
+        // failed to decode still passed.
         int userFrames = 0;
+        bool exercised = false;
         for (const auto& frame : frames)
         {
             Preset p;
@@ -183,14 +215,19 @@ int main (int argc, char** argv)
                 continue;
             ++userFrames;
 
-            const auto persisted = p.encodeFrame (true, false, &err);
-            check (! persisted.empty(),
-                   "encodeFrame(persist=true) allows USER bank "
-                       + std::to_string ((int) p.address().bank) + " program "
-                       + std::to_string ((int) p.address().program));
-            break;   // one is enough; the rule is per page, not per slot
+            if (! exercised)
+            {
+                exercised = true;
+                const auto persisted = p.encodeFrame (true, false, &err);
+                check (! persisted.empty(),
+                       "encodeFrame(persist=true) allows USER bank "
+                           + std::to_string ((int) p.address().bank) + " program "
+                           + std::to_string ((int) p.address().program));
+            }
         }
-        check (userFrames == 1, "the vendor user dump contains a USER-page frame");
+        check (userFrames == 49,
+               "the vendor user dump holds 49 USER-page frames, got "
+                   + std::to_string (userFrames));
     }
 
     // --- 4. malformed input is rejected, not silently accepted ---------------
@@ -198,16 +235,51 @@ int main (int argc, char** argv)
         Preset p;
         std::string err;
         check (! decodeFrame (nullptr, 0, p, &err), "a null frame is rejected");
+        check (! err.empty(), "the null-frame rejection carries a reason");
 
+        err.clear();
         const std::uint8_t notSysex[] = { 0x90, 0x40, 0x7F };
         check (! decodeFrame (notSysex, sizeof (notSysex), p, &err),
                "a 3-byte non-SysEx buffer is rejected");
+        check (! err.empty(), "the non-SysEx rejection carries a reason");
 
+        err.clear();
         std::vector<std::uint8_t> truncated (30, 0x00);
         truncated[0] = 0xF0;
         truncated[29] = 0xF7;
         check (! decodeFrame (truncated.data(), truncated.size(), p, &err),
                "a truncated frame is rejected");
+        check (! err.empty(), "the truncated-frame rejection carries a reason");
+
+        // The documented size bounds, not just an ad-hoc 30-byte buffer: a frame
+        // whose payload is one byte below kMinPayloadSize, and one above
+        // kMaxPayloadSize, must both be refused (a rejected frame must never leave
+        // a caller with a half-populated Preset).
+        auto wellFormedFrame = [] (std::size_t payloadBytes)
+        {
+            Bytes f;
+            f.push_back (0xF0);
+            f.insert (f.end(), kManufacturer, kManufacturer + 5);
+            f.push_back (kFlagLoad);
+            f.push_back (kPageUser);
+            f.push_back (1);   // bank A
+            f.push_back (1);   // program 1
+            f.insert (f.end(), 2 * payloadBytes, 0x00);
+            f.push_back (0xF7);
+            return f;
+        };
+
+        err.clear();
+        const auto belowMin = wellFormedFrame (kMinPayloadSize - 1);
+        check (! decodeFrame (belowMin.data(), belowMin.size(), p, &err),
+               "a payload below kMinPayloadSize is rejected");
+        check (! err.empty(), "the kMinPayloadSize rejection carries a reason");
+
+        err.clear();
+        const auto aboveMax = wellFormedFrame (kMaxPayloadSize + 1);
+        check (! decodeFrame (aboveMax.data(), aboveMax.size(), p, &err),
+               "a payload above kMaxPayloadSize is rejected");
+        check (! err.empty(), "the kMaxPayloadSize rejection carries a reason");
     }
 
     if (failures == 0)

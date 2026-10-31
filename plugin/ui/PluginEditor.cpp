@@ -58,6 +58,7 @@ PluginEditor::PluginEditor (Processor& plugIn)
     tooltips = std::make_unique<juce::TooltipWindow> (this, 650);
 
     presetChanged (proc).addChangeListener (this);
+    deviceChanged (proc).addChangeListener (this);
     presetLabel = currentPresetLabel();
     presetSegments = currentPresetSegments();
 
@@ -69,6 +70,7 @@ PluginEditor::PluginEditor (Processor& plugIn)
 PluginEditor::~PluginEditor()
 {
     presetChanged (proc).removeChangeListener (this);
+    deviceChanged (proc).removeChangeListener (this);
 
     // Children are still alive here, so the default LookAndFeel must stay set
     // until they are gone. Nulling it would leave them pointing at a live object
@@ -208,8 +210,8 @@ void PluginEditor::paintPresetCluster (juce::Graphics& g, juce::Rectangle<int> r
 
     //--- the A-G / 1-7 grid ---------------------------------------------------
     const auto& addr = proc.getCurrentPreset().address();
-    const int curBank = juce::jlimit (1, 7, (int) addr.bank);
-    const int curProg = juce::jlimit (1, 7, (int) addr.program);
+    const int curBank = (addr.bank >= 1 && addr.bank <= 7) ? (int) addr.bank : 0;
+    const int curProg = (addr.program >= 1 && addr.program <= 7) ? (int) addr.program : 0;
     const bool hasLoaded = ! proc.getCurrentPreset().payload().empty();
 
     // withTrimmedLeft takes an AMOUNT, not an absolute coordinate: passing
@@ -225,7 +227,7 @@ void PluginEditor::paintPresetCluster (juce::Graphics& g, juce::Rectangle<int> r
 
     for (int i = 0; i < 7; ++i)
     {
-        const bool lit = hasLoaded && (i + 1) == curBank;
+        const bool lit = hasLoaded && curBank > 0 && (i + 1) == curBank;
         auto cellA = juce::Rectangle<float> (grid.getX() + (float) i * cellW, grid.getY(),
                                              cellW, rowH);
         g.setColour (lit ? kPinkAccent : withAlpha (kCreamMute, 0.85f));
@@ -238,7 +240,7 @@ void PluginEditor::paintPresetCluster (juce::Graphics& g, juce::Rectangle<int> r
                                     10.0f, 1.5f, 0.75f);
         }
 
-        const bool litN = hasLoaded && (i + 1) == curProg;
+        const bool litN = hasLoaded && curProg > 0 && (i + 1) == curProg;
         auto cellB = cellA.translated (0.0f, rowH);
         g.setColour (litN ? kPinkAccent : withAlpha (kCreamMute, 0.85f));
         g.setFont (fontMicro());
@@ -258,8 +260,10 @@ juce::String PluginEditor::currentPresetSegments() const
     if (proc.getCurrentPreset().payload().empty())
         return {};
     const auto& a = proc.getCurrentPreset().address();
-    const int bank = juce::jlimit (1, 7, (int) a.bank);
-    const int prog = juce::jlimit (1, 7, (int) a.program);
+    if (a.bank < 1 || a.bank > 7 || a.program < 1 || a.program > 7)
+        return {};
+    const int bank = (int) a.bank;
+    const int prog = (int) a.program;
     juce::String s;
     s << (a.isUser() ? 'U' : 'F')
       << juce::String::charToString ((juce::juce_wchar) ('A' + bank - 1))
@@ -278,6 +282,18 @@ juce::String PluginEditor::currentPresetLabel() const
 
 void PluginEditor::changeListenerCallback (juce::ChangeBroadcaster*)
 {
+    auto* mm = juce::MessageManager::getInstance();
+    if (mm != nullptr && ! mm->isThisTheMessageThread())
+    {
+        juce::Component::SafePointer<PluginEditor> safe (this);
+        juce::MessageManager::callAsync ([safe]
+        {
+            if (safe != nullptr)
+                safe->changeListenerCallback (nullptr);
+        });
+        return;
+    }
+
     const auto nextLabel = currentPresetLabel();
     const auto nextSegs = currentPresetSegments();
     if (nextLabel != presetLabel || nextSegs != presetSegments)

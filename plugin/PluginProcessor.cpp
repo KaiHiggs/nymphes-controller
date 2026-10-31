@@ -112,14 +112,18 @@ NymphesControllerAudioProcessor::NymphesControllerAudioProcessor()
 
     // The CC engine reaches the synth through the port this processor owns. The
     // MidiPort is JUCE-free, so the raw bytes of the JUCE message are handed over.
+    // This sink is called from the message thread (a knob move) AND from the audio
+    // thread (a learned CC inside processBlock), so it only ever QUEUES: MidiPort::
+    // sendChannel builds a MIDIPacketList in a fresh std::vector, which must not
+    // happen in processBlock. timerCallback() drains the queue.
     ccEngine.setMidiSink ([this] (const juce::MidiMessage& m)
     {
         const auto* d = m.getRawData();
         const int n = m.getRawDataSize();
         if (n >= 3)
-            midi.sendChannel (d[0], d[1], d[2]);
+            queueCc (d[0], d[1], d[2]);
         else if (n == 2)
-            midi.sendChannel (d[0], d[1], 0);
+            queueCc (d[0], d[1], 0);
     });
     ccEngine.attachToProcessor (*this);
 
@@ -139,6 +143,10 @@ NymphesControllerAudioProcessor::NymphesControllerAudioProcessor()
 
 NymphesControllerAudioProcessor::~NymphesControllerAudioProcessor()
 {
+    // First: a callback that is already queued must become a no-op before anything
+    // it touches is torn down. Clearing the callbacks below does not cancel work that
+    // callAsync has already posted.
+    aliveToken->store (false);
     stopTimer();
     for (const auto& spec : nymphes::ccui::allSpecs())
         apvts.removeParameterListener (idForCc ((int) spec.cc), this);
@@ -155,10 +163,13 @@ void NymphesControllerAudioProcessor::wireMidi()
     midi.setSysExCallback ([this] (const std::vector<uint8_t>& frame)
     {
         // CoreMIDI thread. Hand the frame to the message thread: decoding and the
-        // bank mutation are not real-time work.
+        // bank mutation are not real-time work. The token makes a frame that is still
+        // queued when the processor dies a no-op instead of a use-after-free.
         auto copy = frame;
-        juce::MessageManager::callAsync ([this, copy]
+        auto token = aliveToken;
+        juce::MessageManager::callAsync ([this, copy, token]
         {
+            if (! token->load()) return;
             onSysExFromDevice (copy);
         });
     });
@@ -174,11 +185,85 @@ void NymphesControllerAudioProcessor::wireMidi()
 
     midi.setConnectionCallback ([this] (bool, const std::string&)
     {
-        juce::MessageManager::callAsync ([this] { updateDeviceStatus(); });
+        auto token = aliveToken;
+        juce::MessageManager::callAsync ([this, token]
+        {
+            if (! token->load()) return;
+            updateDeviceStatus();
+        });
     });
 }
 
-void NymphesControllerAudioProcessor::openMidiPort (const juce::String& nameOrEmpty)
+void NymphesControllerAudioProcessor::queueCc (std::uint8_t status, std::uint8_t data1,
+                                               std::uint8_t data2)
+{
+    const juce::SpinLock::ScopedTryLockType lock (ccOutLock);
+    if (! lock.isLocked() || ccOutCount >= kCcOutCapacity)
+    {
+        // Never block or allocate on the caller's thread (usually the audio one), so
+        // the only option is to lose this CC - but not silently: drainCcQueue()
+        // reports the count.
+        ccDroppedCount.fetch_add (1, std::memory_order_relaxed);
+        return;
+    }
+    auto* p = &ccOut[(std::size_t) ccOutCount * 3];
+    p[0] = status;
+    p[1] = data1;
+    p[2] = data2;
+    ++ccOutCount;
+}
+
+void NymphesControllerAudioProcessor::drainCcQueue()
+{
+    // Copy the batch out under the lock, then send outside it: MidiPort::sendChannel
+    // allocates and can block on the MIDI server, and holding the spin lock for that
+    // would just make the audio thread drop its next CC.
+    std::array<std::uint8_t, (std::size_t) kCcOutCapacity * 3> batch {};
+    int count = 0;
+    {
+        const juce::SpinLock::ScopedLockType lock (ccOutLock);
+        count = ccOutCount;
+        batch = ccOut;
+        ccOutCount = 0;
+    }
+
+    // A CC that queueCc could not take is lost, and a lost CC looks exactly like a
+    // fader that does nothing. Say it once per run of drops rather than never.
+    const int dropped = ccDroppedCount.exchange (0, std::memory_order_relaxed);
+    if (dropped > 0)
+    {
+        if (! ccDropReported)
+        {
+            ccDropReported = true;
+            setError ("A CC was dropped before it could be sent (" + juce::String (dropped)
+                      + " this tick): the audio thread and the send timer collided. "
+                        "Move the control again if the synth did not follow.");
+        }
+    }
+    else
+    {
+        ccDropReported = false;
+    }
+
+    for (int i = 0; i < count; ++i)
+    {
+        const auto* p = &batch[(std::size_t) i * 3];
+        // A dropped CC used to be completely silent: the sink threw the result away, so
+        // "the slider does nothing" was the only symptom the user ever saw. Report the
+        // first failure of a run once, and clear the flag on the next success so a
+        // reconnect does not leave a stale error.
+        if (midi.sendChannel (p[0], p[1], p[2]))
+            ccSendFailureReported = false;
+        else if (! ccSendFailureReported)
+        {
+            ccSendFailureReported = true;
+            setError ("A CC could not be sent (is the Nymphes port still open?). "
+                      "The preset SysEx path uses the same port.");
+        }
+    }
+}
+
+bool NymphesControllerAudioProcessor::openMidiPort (const juce::String& nameOrEmpty)
 {
     requestedPort = nameOrEmpty;
     midi.close();
@@ -190,6 +275,7 @@ void NymphesControllerAudioProcessor::openMidiPort (const juce::String& nameOrEm
         setError ("Could not open MIDI port: " + toJuce (error));
     updateDeviceStatus();
     deviceBroadcaster.sendChangeMessage();
+    return ok;
 }
 
 void NymphesControllerAudioProcessor::updateDeviceStatus()
@@ -233,6 +319,9 @@ juce::String NymphesControllerAudioProcessor::paramIdForCc (int cc) const
 
 void NymphesControllerAudioProcessor::timerCallback()
 {
+    // 0. Send anything the audio thread queued (see queueCc).
+    drainCcQueue();
+
     // 1. Push engine values into the host parameters so automation and the saved
     //    state follow a MIDI-learned knob or a preset load.
     updatingFromEngine = true;
@@ -272,6 +361,10 @@ void NymphesControllerAudioProcessor::timerCallback()
             if (midi.sendSysEx (restore.encodeFrameRaw()))
             {
                 bank.set (restore);
+                // The device holds the ORIGINAL again, so that is what the editor
+                // must show; leaving currentPreset at the optimistic toWrite made the
+                // browser describe a slot the synth does not have.
+                currentPreset = restore;
                 setError ("Read-back timed out ("
                           + juce::String (kWriteTimeoutMs / 1000.0, 1)
                           + " s); the original slot contents were sent back.");
@@ -339,11 +432,30 @@ bool NymphesControllerAudioProcessor::saveToUserSlot (const nymphes::Preset& p,
         return false;
     }
 
-    // Preserve the slot's original bytes before touching it, so a failed
-    // verification can put them back.
+    // One write in flight at a time: a second saveToUserSlot() would overwrite
+    // writeOriginalPreset / writeSentPayload / writeSlot, so the pending read-back
+    // could be matched against the wrong slot and the wrong bytes restored.
+    if (writeInFlight)
+    {
+        setError ("A slot write is already awaiting its read-back; try again when it "
+                  "finishes (or times out).");
+        return false;
+    }
+
+    // Preserve the slot's original bytes before touching it: the restore invariant at
+    // the top of this file cannot be honoured for a slot whose contents we never
+    // captured, so an unknown slot is refused rather than written unrestorably. The
+    // caller reads the slot (or runs a full dump) first.
     const int index = nymphes::PresetBank::indexFor (nymphes::Page::User, slot);
-    writeOriginalKnown = bank.contains (index);
-    writeOriginalPreset = writeOriginalKnown ? bank.at (index) : nymphes::Preset {};
+    if (! bank.contains (index))
+    {
+        setError ("The current contents of USER " + juce::String (slot.toString())
+                  + " are unknown, so the write could not be undone; read the slot (or run "
+                    "a full dump) before writing it.");
+        return false;
+    }
+    writeOriginalKnown = true;
+    writeOriginalPreset = bank.at (index);
 
     // Build the write frame from the CURRENT payload bytes verbatim. Nothing is
     // re-serialised from a semantic view: a rebuild would drop the optional
@@ -392,13 +504,13 @@ bool NymphesControllerAudioProcessor::saveToUserSlot (const nymphes::Preset& p,
 }
 
 //==============================================================================
-void NymphesControllerAudioProcessor::requestFullDump()
+bool NymphesControllerAudioProcessor::requestFullDump()
 {
     if (! midi.isOpen())
     {
         setError ("No Nymphes port open. Connect the synth (or use its own MENU dump "
                   "function with the port open) and try again.");
-        return;
+        return false;
     }
 
     // The full-dump request is the vendor's documented message: F0 00 21 35 00 06 02 F7
@@ -410,15 +522,15 @@ void NymphesControllerAudioProcessor::requestFullDump()
     if (! midi.sendSysEx (request))
     {
         setError ("Sending the full-dump request failed.");
-        return;
+        return false;
     }
 
-    // Arm capture as well: the device answers with a stream of preset frames, and
-    // every one that decodes is ingested by onSysExFromDevice().
-    capturing = true;
+    // The device answers with a stream of preset frames, and every one that decodes
+    // is ingested by onSysExFromDevice().
     lastError = "Full-dump request sent. Presets arriving from the synth are added to "
                 "the browser list as they decode.";
     deviceBroadcaster.sendChangeMessage();
+    return true;
 }
 
 void NymphesControllerAudioProcessor::onSysExFromDevice (const std::vector<uint8_t>& frame)
@@ -454,10 +566,21 @@ void NymphesControllerAudioProcessor::onSysExFromDevice (const std::vector<uint8
             {
                 nymphes::Preset restore = writeOriginalPreset;
                 restore.setFlag (nymphes::kFlagWrite);
-                midi.sendSysEx (restore.encodeFrameRaw());
-                bank.set (restore);
-                lastError = "Read-back did NOT match the bytes sent. The original "
-                            "slot contents were sent back to restore it.";
+                if (midi.sendSysEx (restore.encodeFrameRaw()))
+                {
+                    bank.set (restore);
+                    currentPreset = restore;
+                    lastError = "Read-back did NOT match the bytes sent. The original "
+                                "slot contents were sent back to restore it.";
+                }
+                else
+                {
+                    // The send is what makes the claim true; without it the slot still
+                    // holds whatever the write put there and the user must be told.
+                    lastError = "Read-back did NOT match the bytes sent AND the restore "
+                                "could not be sent; the slot is left UNVERIFIED and holds "
+                                "the written preset.";
+                }
             }
             else
             {
@@ -466,22 +589,10 @@ void NymphesControllerAudioProcessor::onSysExFromDevice (const std::vector<uint8
                             "so it could not be restored.";
             }
         }
-        presetBroadcaster.sendChangeMessage();
     }
 
     presetBroadcaster.sendChangeMessage();
     deviceBroadcaster.sendChangeMessage();
-}
-
-void NymphesControllerAudioProcessor::onChannelFromDevice (const nymphes::ChannelMessage& m)
-{
-    if (m.type() == 0xB0)
-        ccEngine.setValueFromDevice (m.data1, m.data2);
-}
-
-void NymphesControllerAudioProcessor::sendFrame (const std::vector<uint8_t>& frame)
-{
-    midi.sendSysEx (frame);
 }
 
 //==============================================================================

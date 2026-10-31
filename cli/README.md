@@ -15,49 +15,60 @@ c++ -std=c++17 -O2 -I<core>/include -Icli cli/main.cpp <core>/src/Codec.cpp \
     -o nymphes-cli
 ```
 
-`cli/gen/nymphes_params_gen.h` is **generated** from `params/params.json` by
-`tools/gen_cc_header.py`; never edit it by hand (`--check` fails when it drifts).
+`cli/gen/nymphes_params_gen.h` is **generated**, but neither its generator
+(`tools/gen_cc_header.py`) nor its input (`params/params.json`) is present in this
+tree, and no source file includes it today. The checked-in header is therefore the
+only copy we have; it carries its own compile-time integrity checks, and
+`tests/params_gen_test.cpp` is its only consumer. Do not hand-edit the tables; the
+asserts and the test are the exception (they belong in the generator if it returns).
 
 ## Commands
 
 ```
-nymphes-cli params   [--group G] [--json]           the 82 MIDI CCs
-nymphes-cli list     <bank.syx>... [--json]         slots in a .syx
-nymphes-cli show     <bank.syx> [--slot U-D5]       decoded parameters
-nymphes-cli verify   <bank.syx>...                  framing, CRC, byte identity
-nymphes-cli export   <bank.syx> --slot S --out F.syx|F.txt
-nymphes-cli import   <F.syx|F.txt> --slot S [--out OUT.syx] [--append]
-nymphes-cli convert  <in.syx|in.txt> --out <out.syx|out.txt>
-nymphes-cli device   list
-nymphes-cli device   dump  --out FILE  --lock FILE
-nymphes-cli device   write --from FILE --slot U-A1 --lock FILE
+file commands:
+  verify <file.syx>                   framing, CRC, structure and re-encode report
+  list <file.syx>                     list the presets in a dump
+  show <file.syx> [--index N]          every named parameter of one preset
+  extract <in.syx> --index N --out F  write one preset as its own .syx
+  split <in.syx> --outdir DIR         one .syx per preset
+  merge <a.syx> [b.syx ...] --out F   concatenate dumps into one .syx
+  txt <in.syx> [--index N] [--out F]  human-readable parameter text
+  export-txt <in.syx> --out F         tab-separated table of all presets
+
+device commands (each takes --lock <file>):
+  devices                             list MIDI endpoints
+  ccmap                               print the 82-CC parameter map
+  read --slot A1 [--out F]            load that slot, capture what the device sends
+  write <file.syx> --slot A1 --yes    write a USER slot, read back, restore the original
+  capture --seconds N --out F         record a MENU-driven dump
+  dump-request                        send the documented full-dump request
+  cc <cc> <value> [--channel N]       send one CC
+  panic [--channel N]                 all-sound-off + all-notes-off
 ```
 
-Slot spellings accepted: `U-D5`, `u-d5`, `UD5`, `userD5`, `user-d5`, `F-A1`,
-`factoryA1`.
+`--channel` is 1..16 (validated before a session opens). `write` also takes
+`--no-restore`. Sending a CC or a SysEx message that is not a preset frame is the
+only way this tool touches a device other than `read`/`write`/`capture`.
 
 ## Rules the binary enforces (each one is a fact, not a preference)
 
 1. **Payload length is data.** Vendor dumps are 2109-byte frames with 1049-byte
-   payloads; the live unit sends frames up to 2323 bytes and payloads 1049..1156.
-   `verify` prints the observed histogram instead of comparing to a constant, and
-   nothing in the code sizes a buffer from 1049.
-2. **A slot write preserves bytes.** `device write` re-emits the payload of the
-   preset it read (`Preset::encodeFrame(persist=true)` on the decoded payload),
+   payloads; the live unit sends payloads 1049..1156. `verify` prints the observed
+   sizes instead of comparing to a constant, and nothing sizes a buffer from 1049.
+2. **A slot write preserves bytes.** `write` re-emits the payload it decoded,
    never a message rebuilt from the semantic view: rebuilding drops the optional
    reverb floats and re-encodes negative chords unsigned, i.e. it would silently
-   shrink the preset. Verify read-back by comparing `payload_sha256`, not values.
-3. **Factory slots are read-only.** Addressing `F-*` requires
-   `--i-know-this-overwrites`; `device write` to a factory slot is refused.
+   shrink the preset. Read-back is compared on payload bytes, verbatim.
+3. **Factory slots are read-only.** `write` refuses `--page` other than `user`
+   before a byte is sent, and the frame is encoded through
+   `encodeForDevice(persist=true, allowFactoryWrite=false)`, which refuses a
+   FACTORY address.
 4. **Every device session holds an flock.** `--lock <file>` takes a non-blocking
-   exclusive `flock` and refuses to continue if another process holds it. The
-   fleet lock file is
-   `<gate>/vendor/midi.lock`; the brief's outer `flock ... -c '...'` is still the
-   intended wrapper, `--lock` exists so the binary cannot be run unprotected by
-   accident.
-5. **The factory write flag is never set silently.** `FF=0x01` only from
-   `device write`; `export`/`import`/`convert` preserve the flag byte that was
-   decoded.
+   exclusive `flock(2)` and refuses to continue if another process holds it
+   (macOS has no `flock(1)` binary, so the lock is taken in-process). A device
+   command without `--lock` is a usage error.
+5. **The factory write flag is never set silently.** `FF=0x01` only comes from
+   `write`; the file commands preserve the flag byte that was decoded.
 
 ## What is *not* verified by this tool
 
@@ -70,6 +81,10 @@ Slot spellings accepted: `U-D5`, `u-d5`, `UD5`, `userD5`, `user-d5`, `F-A1`,
 
 ## Smoke test
 
-`sh tests/run_all.sh` builds this binary and the golden-vector gate against the
-shipping codec and runs both corpora, the Python oracle suite and the export /
-import / convert / factory-refusal paths.
+`cd build && ctest` runs `tests/cli_smoke_test.cpp`, which drives this binary
+end-to-end on fixtures it builds itself (no device, no corpus): the verify gate over
+a file with one corrupt frame, the list column, the write plan without `--yes`, the
+unwritable-output and bad-`--outdir` error paths, and `--channel` validation.
+`sh core/run_tests.sh [vendor-dir]` runs the codec self-test and the corpus runner
+(the vendor dumps are not in this tree, so that gate skips unless you pass a
+directory holding both).

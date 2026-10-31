@@ -5,6 +5,7 @@
 // the client, the OS delivers the bytes, the host is not involved.
 
 #include "MidiPort.h"
+#include "MidiStream.h"
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreMIDI/CoreMIDI.h>
@@ -38,14 +39,14 @@ std::string stringProperty (MIDIObjectRef obj, CFStringRef key)
     return out;
 }
 
-MidiDeviceInfo describe (MIDIEndpointRef ep, bool asSource)
+MidiDeviceInfo describe (MIDIEndpointRef ep)
 {
     MidiDeviceInfo info;
     info.name = stringProperty (ep, kMIDIPropertyDisplayName);
 
-    // The endpoint's owning entity/device carries the manufacturer/model.
+    // Fall back to the endpoint's own name when the OS has no display name.
     if (info.name.empty())
-        info.name = stringProperty (ep, asSource ? kMIDIPropertyName : kMIDIPropertyName);
+        info.name = stringProperty (ep, kMIDIPropertyName);
 
     MIDIEntityRef entity = 0;
     if (MIDIEndpointGetEntity (ep, &entity) == noErr && entity != 0)
@@ -60,17 +61,7 @@ MidiDeviceInfo describe (MIDIEndpointRef ep, bool asSource)
     return info;
 }
 
-// Bytes needed after the status byte for a channel message.
-int bytesNeeded (uint8_t status)
-{
-    switch (status & 0xF0)
-    {
-        case 0xC0: case 0xD0: return 1;
-        case 0x80: case 0x90: case 0xA0: case 0xB0: case 0xE0: return 2;
-        default: return 0;
-    }
-}
-
+// Bytes needed after the status byte for a channel message: midi_detail::bytesNeeded.
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -86,7 +77,7 @@ struct MidiPort::Impl
 
     std::string        openedName;
     std::string        wanted = "Nymphes";
-    bool               watching = false;
+    bool               watching = false;   // recorded only: this backend never re-attaches
     std::atomic<bool>  isOpenFlag { false };
 
     mutable std::mutex mutex;
@@ -94,33 +85,28 @@ struct MidiPort::Impl
     ChannelCallback    channelCb;
     ConnectionCallback connectionCb;
 
-    // SysEx reassembly state (guarded by `mutex` as well; only the input thread
-    // mutates it, but a reconnect resets it).
-    std::vector<uint8_t> sysexBuf;
-    bool                 inSysex   = false;
-    uint8_t              status    = 0;
-    uint8_t              data[2]   = { 0, 0 };
-    int                  dataCount = 0;
+    // F0..F7 reassembly and running status. Guarded by `mutex`; only the input
+    // thread mutates it, but a reconnect resets it.
+    midi_detail::StreamParser parser;
 
     ~Impl() { shutdown(); }
 
     void shutdown()
     {
-        const bool wasOpen = isOpenFlag.exchange (false);
-        if (input != 0 && connectedSource != 0)
-            MIDIPortDisconnectSource (input, connectedSource);
-        connectedSource = 0;
-        source = dest = 0;
-        if (input  != 0) { MIDIPortDispose (input);  input = 0; }
-        if (output != 0) { MIDIPortDispose (output); output = 0; }
-        if (client != 0) { MIDIClientDispose (client); client = 0; }
+        bool wasOpen = false;
         {
+            // Serialised with start() (which holds the same lock for the whole open
+            // sequence) so a close cannot dispose ports under a half-finished open,
+            // and with send() which reads `dest`/`output`.
             std::lock_guard<std::mutex> lock (mutex);
-            sysexBuf.clear();
-            inSysex = false;
-            dataCount = 0;
+            wasOpen = shutdownLocked();
         }
-        if (wasOpen) { openedName.clear(); notify (false); }
+        if (wasOpen)
+        {
+            notify (false);                    // still reports the name it had
+            std::lock_guard<std::mutex> lock (mutex);
+            openedName.clear();
+        }
     }
 
     void notify (bool connected)
@@ -143,57 +129,9 @@ struct MidiPort::Impl
 
         {
             std::lock_guard<std::mutex> lock (mutex);
-            for (size_t i = 0; i < n; ++i)
-            {
-                const uint8_t b = d[i];
-
-                // Real time (clock, start/stop/continue, active sensing) may be
-                // interleaved *inside* a SysEx stream and must not be buffered.
-                if (b >= 0xF8) continue;
-
-                if (b == 0xF0)
-                {
-                    sysexBuf.clear();
-                    sysexBuf.push_back (0xF0);
-                    inSysex = true;
-                    dataCount = 0;
-                    continue;
-                }
-
-                if (inSysex)
-                {
-                    sysexBuf.push_back (b);
-                    if (b == 0xF7)
-                    {
-                        inSysex = false;
-                        sysexFrames.push_back (sysexBuf);
-                        sysexBuf.clear();
-                    }
-                    continue;
-                }
-
-                if (b & 0x80)
-                {
-                    status    = b;
-                    dataCount = 0;
-                    if ((b & 0xF0) == 0xF0) status = 0;   // system common we do not handle
-                    continue;
-                }
-
-                if (status == 0) continue;
-                const int need = bytesNeeded (status);
-                if (need == 0) { status = 0; continue; }
-                data[dataCount++] = b;
-                if (dataCount >= need)
-                {
-                    ChannelMessage m;
-                    m.status = status;
-                    m.data1  = data[0];
-                    m.data2  = (need > 1) ? data[1] : 0;
-                    channelMsgs.push_back (m);
-                    dataCount = 0;
-                }
-            }
+            parser.push (d, n);
+            sysexFrames = parser.takeSysEx();
+            channelMsgs = parser.takeChannel();
         }
 
         if (! sysexFrames.empty() || ! channelMsgs.empty())
@@ -226,7 +164,8 @@ struct MidiPort::Impl
         if (self != nullptr && list != nullptr) self->handlePacketList (list);
     }
 
-    // Re-find the endpoint pair by name; returns true when both sides attached.
+    // Re-find the endpoint pair by name; returns true when the pair can be used,
+    // which means at least a destination (this port exists to send).
     bool attach (const std::string& want, std::string* error)
     {
         dest = 0; source = 0;
@@ -234,34 +173,35 @@ struct MidiPort::Impl
         auto matches = [&want] (const MidiDeviceInfo& info)
         {
             if (! want.empty())
-            {
-                std::string lowerName = info.name, lowerWant = want;
-                std::transform (lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-                std::transform (lowerWant.begin(), lowerWant.end(), lowerWant.begin(), ::tolower);
-                return lowerName.find (lowerWant) != std::string::npos;
-            }
-            return looksLikeNymphes (info) || info.name.find ("Nymphes") != std::string::npos;
+                return midi_detail::containsIgnoreCase (info.name, want);
+            return looksLikeNymphes (info);
         };
 
         const ItemCount nDest = MIDIGetNumberOfDestinations();
         for (ItemCount i = 0; i < nDest; ++i)
         {
-            MIDIEndpointRef ep = MIDIGetDestination (i);
-            if (ep != 0 && matches (describe (ep, false))) { dest = ep; openedName = describe (ep, false).name; break; }
+            const MIDIEndpointRef ep = MIDIGetDestination (i);
+            if (ep == 0) continue;
+            const MidiDeviceInfo info = describe (ep);
+            if (matches (info)) { dest = ep; openedName = info.name; break; }
         }
 
         const ItemCount nSrc = MIDIGetNumberOfSources();
         for (ItemCount i = 0; i < nSrc; ++i)
         {
-            MIDIEndpointRef ep = MIDIGetSource (i);
-            if (ep != 0 && matches (describe (ep, true))) { source = ep; if (openedName.empty()) openedName = describe (ep, true).name; break; }
+            const MIDIEndpointRef ep = MIDIGetSource (i);
+            if (ep == 0) continue;
+            const MidiDeviceInfo info = describe (ep);
+            if (matches (info)) { source = ep; if (openedName.empty()) openedName = info.name; break; }
         }
 
-        if (dest == 0 && source == 0)
+        // A source-only match is not an open port: nothing could be sent, so
+        // sendSysEx()/sendCC() would fail afterwards while isOpen() claimed otherwise.
+        if (dest == 0)
         {
             if (error != nullptr)
-                *error = want.empty() ? "no Nymphes MIDI endpoint found"
-                                      : ("no MIDI endpoint matching \"" + want + "\"");
+                *error = want.empty() ? "no Nymphes MIDI destination found"
+                                      : ("no MIDI destination matching \"" + want + "\"");
             return false;
         }
         return true;
@@ -269,7 +209,7 @@ struct MidiPort::Impl
 
     bool start (const std::string& want, bool watch, std::string* error)
     {
-        std::lock_guard<std::mutex> lifecycle (mutex);
+        std::unique_lock<std::mutex> lifecycle (mutex);
         shutdownLocked();
 
         wanted = want;
@@ -300,8 +240,8 @@ struct MidiPort::Impl
             return false;
         }
 
-        // NOTE: shutdownLocked() may call notify() which takes `mutex`; it only
-        // does so when it was previously open, and this call path holds the lock.
+        // shutdownLocked() only touches state (it never notifies), and this call
+        // path holds the lock, so the sequence below cannot deadlock.
         if (! attach (want, error))
         {
             MIDIPortDispose (input);  input  = 0;
@@ -315,7 +255,12 @@ struct MidiPort::Impl
             const OSStatus cs = MIDIPortConnectSource (input, source, nullptr);
             if (cs != noErr)
             {
-                if (error != nullptr) *error = "MIDIPortConnectSource failed (" + std::to_string (cs) + ")";
+                // The destination is what this port is for; an unconnectable input
+                // only disables incoming MIDI, so the open still succeeds and no
+                // error is reported on a true return. Drop the unusable input port
+                // rather than leaving a half-connected one behind.
+                MIDIPortDispose (input);
+                input = 0;
             }
             else
             {
@@ -324,11 +269,14 @@ struct MidiPort::Impl
         }
 
         isOpenFlag = true;
+        lifecycle.unlock();          // notify() re-locks `mutex`
+        notify (true);
         return true;
     }
 
     // Variant that assumes `mutex` is already held, so callers do not deadlock.
-    void shutdownLocked()
+    // Returns whether the port had been open (the caller notifies after unlocking).
+    bool shutdownLocked()
     {
         if (input != 0 && connectedSource != 0)
             MIDIPortDisconnectSource (input, connectedSource);
@@ -337,14 +285,19 @@ struct MidiPort::Impl
         if (input  != 0) { MIDIPortDispose (input);  input = 0; }
         if (output != 0) { MIDIPortDispose (output); output = 0; }
         if (client != 0) { MIDIClientDispose (client); client = 0; }
-        sysexBuf.clear();
-        inSysex = false;
-        dataCount = 0;
-        if (isOpenFlag.exchange (false)) openedName.clear();
+        // Forget the partial frame AND the running status: otherwise the first data
+        // byte after a reopen completes a message left over from the old session.
+        parser.reset();
+        return isOpenFlag.exchange (false);
     }
 
     bool send (const uint8_t* data, size_t size, std::string* error)
     {
+        // `dest`/`output` are disposed by shutdown() under this lock, so a send must
+        // hold it too; otherwise a close could free the port between the null check
+        // and MIDISend. Callbacks run outside the lock, so sending from inside one is
+        // safe.
+        std::lock_guard<std::mutex> guard (mutex);
         if (! isOpenFlag.load() || dest == 0 || output == 0)
         {
             if (error != nullptr) *error = "MIDI port is not open";
@@ -394,7 +347,7 @@ std::vector<MidiDeviceInfo> MidiPort::listDestinations()
     const ItemCount n = MIDIGetNumberOfDestinations();
     for (ItemCount i = 0; i < n; ++i)
         if (MIDIEndpointRef ep = MIDIGetDestination (i); ep != 0)
-            out.push_back (describe (ep, false));
+            out.push_back (describe (ep));
     return out;
 }
 
@@ -404,22 +357,18 @@ std::vector<MidiDeviceInfo> MidiPort::listSources()
     const ItemCount n = MIDIGetNumberOfSources();
     for (ItemCount i = 0; i < n; ++i)
         if (MIDIEndpointRef ep = MIDIGetSource (i); ep != 0)
-            out.push_back (describe (ep, true));
+            out.push_back (describe (ep));
     return out;
 }
 
 bool MidiPort::looksLikeNymphes (const MidiDeviceInfo& info)
 {
-    auto has = [] (const std::string& hay, const char* needle)
-    {
-        std::string h = hay, w = needle;
-        std::transform (h.begin(), h.end(), h.begin(), ::tolower);
-        std::transform (w.begin(), w.end(), w.begin(), ::tolower);
-        return h.find (w) != std::string::npos;
-    };
     // Name/model only. Never VID:PID: 0483:5740 is ST's generic VCP pair and
-    // matches unrelated devices.
-    return has (info.name, "nymphes") || has (info.model, "nymphes");
+    // matches unrelated devices. Case-insensitive on every backend, through the one
+    // shared helper (MidiStream.h), so a synthetic "nymphes" answers the same here,
+    // on Windows and on the no-backend build.
+    return midi_detail::containsIgnoreCase (info.name, "nymphes")
+        || midi_detail::containsIgnoreCase (info.model, "nymphes");
 }
 
 bool MidiPort::open (const std::string& nameSubstring, std::string* error)
@@ -442,7 +391,8 @@ std::string MidiPort::openedName() const
 
 bool MidiPort::sendSysEx (const std::vector<uint8_t>& frame, std::string* error)
 {
-    if (frame.size() < 4 || frame.front() != 0xF0 || frame.back() != 0xF7)
+    // The shortest legal SysEx message is F0 F7; anything bounded by F0..F7 is a frame.
+    if (frame.size() < 2 || frame.front() != 0xF0 || frame.back() != 0xF7)
     {
         if (error != nullptr) *error = "not a complete F0..F7 SysEx frame";
         return false;
@@ -453,7 +403,7 @@ bool MidiPort::sendSysEx (const std::vector<uint8_t>& frame, std::string* error)
 bool MidiPort::sendChannel (uint8_t status, uint8_t data1, uint8_t data2)
 {
     const uint8_t bytes[3] = { status, data1, data2 };
-    const int need = bytesNeeded (status);
+    const int need = midi_detail::bytesNeeded (status);
     if (need == 0) return false;
     return impl->send (bytes, static_cast<size_t> (need + 1), nullptr);
 }

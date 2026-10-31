@@ -319,11 +319,12 @@ inline void drawPlate (juce::Graphics& g, juce::Rectangle<float> r,
 
     //--- the title band -------------------------------------------------------
     const auto titleFont = fontGroup();
-    const float textW = measureWidth (titleFont, title.toUpperCase());
-    const float bandW = textW + 22.0f;
+    const auto upper = title.toUpperCase();
+    const float bandW = trackedWidth (titleFont, upper, 1.4f) + 22.0f;
     const float bandH = (float) kPlateTitleH;
     auto band = juce::Rectangle<float> (bandW, bandH)
-                    .withCentre ({ outline.getX() + 26.0f + bandW * 0.5f, outline.getY() });
+                    .withCentre ({ outline.getX() + 26.0f + bandW * 0.5f,
+                                   outline.getY() + bandH * 0.5f });
 
     // knock the outline out behind the band so the band reads as part of the edge
     g.setColour (body);

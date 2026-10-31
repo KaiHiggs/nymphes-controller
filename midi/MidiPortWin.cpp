@@ -22,6 +22,7 @@
 // No JUCE dependency: the headless CLI links this directly.
 
 #include "MidiPort.h"
+#include "MidiStream.h"
 
 #if defined (_WIN32)
 
@@ -55,28 +56,6 @@ std::string narrow (const wchar_t* w)
     std::string out ((size_t) n - 1, '\0');
     WideCharToMultiByte (CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr);
     return out;
-}
-
-bool containsIgnoreCase (std::string hay, std::string needle)
-{
-    auto lower = [] (std::string& s)
-    {
-        std::transform (s.begin(), s.end(), s.begin(), [] (unsigned char c) { return (char) ::tolower (c); });
-    };
-    lower (hay);
-    lower (needle);
-    return hay.find (needle) != std::string::npos;
-}
-
-// Bytes needed after the status byte for a channel message.
-int bytesNeeded (uint8_t status)
-{
-    switch (status & 0xF0)
-    {
-        case 0xC0: case 0xD0: return 1;
-        case 0x80: case 0x90: case 0xA0: case 0xB0: case 0xE0: return 2;
-        default: return 0;
-    }
 }
 
 std::string errorText (MMRESULT r, bool input)
@@ -134,8 +113,9 @@ struct MidiPort::Impl
     ChannelCallback    channelCb;
     ConnectionCallback connectionCb;
 
-    std::vector<uint8_t> sysexBuf;
-    bool                 inSysex = false;
+    // F0..F7 reassembly, shared with the other backends (midi/MidiStream.h) so the
+    // rules cannot drift per platform. Guarded by `mutex`.
+    midi_detail::StreamParser parser;
 
     ~Impl() { shutdown(); }
 
@@ -158,7 +138,7 @@ struct MidiPort::Impl
         const auto status = (uint8_t) (packed & 0xFF);
         if (status >= 0xF0)
             return;                         // system / real-time: not ours
-        const int need = bytesNeeded (status);
+        const int need = midi_detail::bytesNeeded (status);
         if (need == 0)
             return;
 
@@ -181,25 +161,8 @@ struct MidiPort::Impl
         SysExCallback cb;
         {
             std::lock_guard<std::mutex> lock (mutex);
-            for (size_t i = 0; i < n; ++i)
-            {
-                const uint8_t b = d[i];
-                if (b >= 0xF8) continue;               // real time inside SysEx
-                if (b == 0xF0)
-                {
-                    sysexBuf.assign (1, 0xF0);
-                    inSysex = true;
-                    continue;
-                }
-                if (! inSysex) continue;
-                sysexBuf.push_back (b);
-                if (b == 0xF7)
-                {
-                    inSysex = false;
-                    frames.push_back (std::move (sysexBuf));
-                    sysexBuf.clear();
-                }
-            }
+            parser.push (d, n);
+            frames = parser.takeSysEx();
             cb = sysexCb;
         }
         if (cb)
@@ -218,12 +181,15 @@ struct MidiPort::Impl
         {
             self->feedShort ((DWORD) param1);
         }
-        else if (msg == MIM_LONGDATA)
+        else if (msg == MIM_LONGDATA || msg == MIM_LONGERROR)
         {
             auto* hdr = reinterpret_cast<MIDIHDR*> (param1);
             if (hdr == nullptr)
                 return;
-            if (hdr->dwBytesRecorded > 0)
+            // MIM_LONGERROR carries no usable data, but its header is still a buffer
+            // that was taken out of the pool: it MUST go back or each driver error
+            // permanently consumes one, and after kInBuffers the input is dead.
+            if (msg == MIM_LONGDATA && hdr->dwBytesRecorded > 0)
                 self->feedSysex (reinterpret_cast<const uint8_t*> (hdr->lpData), hdr->dwBytesRecorded);
             // Hand the buffer back unless we are closing (midiInReset returns
             // every buffer through here; re-adding them would stall the close).
@@ -245,7 +211,7 @@ struct MidiPort::Impl
         auto matches = [&want] (const MidiDeviceInfo& info)
         {
             return want.empty() ? MidiPort::looksLikeNymphes (info)
-                                : containsIgnoreCase (info.name, want);
+                                : midi_detail::containsIgnoreCase (info.name, want);
         };
 
         int outId = -1, inId = -1;
@@ -282,6 +248,7 @@ struct MidiPort::Impl
         {
             MMRESULT r = midiInOpen (&in, (UINT) inId, (DWORD_PTR) &Impl::inProc,
                                      (DWORD_PTR) this, CALLBACK_FUNCTION);
+            int queued = 0;
             if (r == MMSYSERR_NOERROR)
             {
                 for (int i = 0; i < kInBuffers; ++i)
@@ -290,26 +257,49 @@ struct MidiPort::Impl
                     h = {};
                     h.lpData = inData[(size_t) i].data();
                     h.dwBufferLength = kInBufferLen;
-                    midiInPrepareHeader (in, &h, sizeof (MIDIHDR));
-                    midiInAddBuffer (in, &h, sizeof (MIDIHDR));
+                    // A header that is not prepared/queued never comes back through
+                    // MIM_LONGDATA, so count the ones that really are in the pool and
+                    // refuse to claim a working input when none is.
+                    if (midiInPrepareHeader (in, &h, sizeof (MIDIHDR)) == MMSYSERR_NOERROR
+                        && midiInAddBuffer (in, &h, sizeof (MIDIHDR)) == MMSYSERR_NOERROR)
+                        ++queued;
                 }
-                r = midiInStart (in);
+                r = queued > 0 ? midiInStart (in) : MMSYSERR_NOMEM;
             }
             if (r != MMSYSERR_NOERROR)
             {
-                // Output alone still lets CCs and preset sends work; say so.
-                if (error != nullptr)
-                    *error = "MIDI input \"" + name + "\" unavailable: " + errorText (r, true);
+                const std::string inputError = "MIDI input \"" + name + "\" unavailable: " + errorText (r, true);
                 closeInput();
+                if (out == nullptr)
+                {
+                    // Nothing can send and nothing can receive: that is a failure, and
+                    // `error` is only meaningful on a false return.
+                    if (error != nullptr) *error = inputError;
+                    return false;
+                }
+                // Output alone still lets CCs and preset sends work, so the open
+                // succeeds and reports no error (callers read `error` only on false).
             }
         }
 
         {
             std::lock_guard<std::mutex> lock (mutex);
             openedName = name;
-            sysexBuf.clear();
-            inSysex = false;
+            parser.reset();
         }
+
+        // A matched INPUT with no matched output is not an open port: nothing could be
+        // sent, so sendSysEx()/sendCC() would fail afterwards while isOpen() said
+        // otherwise. This is the symmetric half of the output-only case above.
+        if (out == nullptr)
+        {
+            closeInput();
+            if (error != nullptr)
+                *error = want.empty() ? "no Nymphes MIDI output found"
+                                      : ("no MIDI output matching \"" + want + "\"");
+            return false;
+        }
+
         isOpenFlag = true;     // like CoreMIDI: the callback reports closes, not opens
         return true;
     }
@@ -344,10 +334,9 @@ struct MidiPort::Impl
         }
         const bool wasOpen = isOpenFlag.exchange (false);
         std::lock_guard<std::mutex> lock (mutex);
-        sysexBuf.clear();
-        inSysex = false;
-        if (wasOpen)
-            openedName.clear();
+        parser.reset();
+        // `openedName` is deliberately NOT cleared here: shutdown() clears it after the
+        // disconnect notification, so the callback still knows which endpoint went.
         return wasOpen;
     }
 
@@ -359,13 +348,22 @@ struct MidiPort::Impl
             wasOpen = shutdownLocked();
         }
         if (wasOpen)
+        {
             notify (false);
+            std::lock_guard<std::mutex> lock (mutex);
+            openedName.clear();
+        }
     }
 
     // --- output --------------------------------------------------------------
 
     bool sendShort (uint8_t status, uint8_t d1, uint8_t d2)
     {
+        // Same lock as sendLong(): WinMM has no atomic "send one message" for a short
+        // message in the middle of a long transfer, so without this a CC emitted from
+        // another thread is queued INSIDE the F0..F7 frame and the synth reads it as
+        // SysEx payload. It also keeps `out` from being closed under the call.
+        std::lock_guard<std::mutex> s (sendMutex);
         if (! isOpenFlag.load() || out == nullptr)
             return false;
         const DWORD packed = (DWORD) status | ((DWORD) d1 << 8) | ((DWORD) d2 << 16);
@@ -399,11 +397,14 @@ struct MidiPort::Impl
         }
 
         // The header and its buffer must outlive the transfer: wait for DONE.
+        // dwFlags is written by the driver, so read it through a volatile pointer -
+        // a plain load may be hoisted out of the loop and never see DONE.
+        auto* const flags = reinterpret_cast<volatile DWORD*> (&h.dwFlags);
         const DWORD started = GetTickCount();
-        while ((h.dwFlags & MHDR_DONE) == 0 && GetTickCount() - started < kSendTimeoutMs)
+        while (((*flags & MHDR_DONE) == 0) && GetTickCount() - started < kSendTimeoutMs)
             Sleep (1);
 
-        const bool done = (h.dwFlags & MHDR_DONE) != 0;
+        const bool done = (*flags & MHDR_DONE) != 0;
         if (! done)
             midiOutReset (out);     // abandons the transfer and marks the header done
         midiOutUnprepareHeader (out, &h, sizeof (MIDIHDR));
@@ -440,7 +441,8 @@ std::vector<MidiDeviceInfo> MidiPort::listSources()
 bool MidiPort::looksLikeNymphes (const MidiDeviceInfo& info)
 {
     // Name/model only. Never VID:PID: 0483:5740 is ST's generic VCP pair.
-    return containsIgnoreCase (info.name, "nymphes") || containsIgnoreCase (info.model, "nymphes");
+    return midi_detail::containsIgnoreCase (info.name, "nymphes")
+        || midi_detail::containsIgnoreCase (info.model, "nymphes");
 }
 
 bool MidiPort::open (const std::string& nameSubstring, std::string* error)
@@ -465,7 +467,8 @@ std::string MidiPort::openedName() const
 
 bool MidiPort::sendSysEx (const std::vector<uint8_t>& frame, std::string* error)
 {
-    if (frame.size() < 4 || frame.front() != 0xF0 || frame.back() != 0xF7)
+    // The shortest legal SysEx message is F0 F7; anything bounded by F0..F7 is a frame.
+    if (frame.size() < 2 || frame.front() != 0xF0 || frame.back() != 0xF7)
     {
         if (error != nullptr) *error = "not a complete F0..F7 SysEx frame";
         return false;
@@ -475,7 +478,7 @@ bool MidiPort::sendSysEx (const std::vector<uint8_t>& frame, std::string* error)
 
 bool MidiPort::sendChannel (uint8_t status, uint8_t data1, uint8_t data2)
 {
-    if (bytesNeeded (status) == 0)
+    if (midi_detail::bytesNeeded (status) == 0)
         return false;
     return impl->sendShort (status, data1, data2);
 }

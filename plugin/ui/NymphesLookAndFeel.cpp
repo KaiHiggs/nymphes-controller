@@ -201,9 +201,10 @@ void NymphesLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& 
 
         case ButtonStyle::raised:
         default:
-            fill = backgroundColour.isTransparent() ? kRaised : backgroundColour;
+            const bool useDefaultRaised = backgroundColour.isTransparent();
+            fill = useDefaultRaised ? kRaised : backgroundColour;
             if (down)          fill = darken (fill, 0.20f);
-            else if (highlighted) fill = style == ButtonStyle::raised ? kRaisedHover : brighten (fill, 0.12f);
+            else if (highlighted) fill = useDefaultRaised ? kRaisedHover : brighten (fill, 0.12f);
             line = highlighted ? kLilacBright : kLilacLine;
             break;
     }
@@ -282,7 +283,7 @@ void NymphesLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton
     const bool on = b.getToggleState();
 
     // A pill switch, not a tick box: on/off is a hardware gesture here.
-    const float h = juce::jmin (18.0f, r.getHeight() - 4.0f);
+    const float h = juce::jlimit (6.0f, 18.0f, r.getHeight() - 4.0f);
     const float w = h * 1.9f;
     auto track = juce::Rectangle<float> (r.getX() + 1.0f, r.getCentreY() - h * 0.5f, w, h);
 
@@ -363,7 +364,7 @@ void NymphesLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     const bool enabled = s.isEnabled();
     const bool active = s.isMouseOverOrDragging() && enabled;
     const auto fill = s.findColour (juce::Slider::rotarySliderFillColourId);
-    juce::ignoreUnused (s.findColour (juce::Slider::rotarySliderOutlineColourId));
+    const auto trackColour = s.findColour (juce::Slider::rotarySliderOutlineColourId);
 
     const float angle = startAngle + pos * (endAngle - startAngle);
 
@@ -373,22 +374,25 @@ void NymphesLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int 
     const float bandR = radius - band * 0.5f - 1.0f;
     juce::Path track;
     track.addCentredArc (cx, cy, bandR, bandR, 0.0f, startAngle, endAngle, true);
-    g.setColour (enabled ? (active ? kLilacBright : kLilacKnob) : withAlpha (kLilacKnob, 0.4f));
+    g.setColour (enabled ? (active ? trackColour.brighter (0.12f) : trackColour)
+                         : withAlpha (trackColour, 0.4f));
     g.strokePath (track, juce::PathStrokeType (band, juce::PathStrokeType::curved,
                                                juce::PathStrokeType::butt));
     if (pos > 0.0001f)
     {
         juce::Path value;
         value.addCentredArc (cx, cy, bandR, bandR, 0.0f, startAngle, angle, true);
-        g.setColour (enabled ? kPinkAccent : withAlpha (kPinkAccent, 0.4f));
+        g.setColour (enabled ? fill : withAlpha (fill, 0.4f));
         g.strokePath (value, juce::PathStrokeType (band * 0.42f, juce::PathStrokeType::curved,
                                                    juce::PathStrokeType::butt));
     }
-    juce::ignoreUnused (fill);
+    // The per-slider fill colour is used for the value arc above.
 
     // 3. the knob: black, knurled at the rim, a brushed metal cap with a black
     //    pointer — the only chrome on the panel, so it is the only place it goes.
     const float knobR = bandR - band * 0.5f - 3.0f;
+    if (knobR <= 0.0f)
+        return;
     const juce::Point<float> c (cx, cy);
     g.setColour (juce::Colours::black.withAlpha (0.4f));
     g.fillEllipse (juce::Rectangle<float> (knobR * 2.0f, knobR * 2.0f).withCentre (c).translated (0.0f, 2.5f));
@@ -434,11 +438,11 @@ void NymphesLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int 
                                            float maxPos, juce::Slider::SliderStyle style,
                                            juce::Slider& s)
 {
-    juce::ignoreUnused (minPos);
+    juce::ignoreUnused (minPos, maxPos);
     auto r = juce::Rectangle<int> (x, y, width, height).toFloat();
     const bool enabled = s.isEnabled();
     const bool active = s.isMouseOverOrDragging() && enabled;
-    juce::ignoreUnused (s.findColour (juce::Slider::trackColourId));
+    const auto trackColour = s.findColour (juce::Slider::trackColourId);
 
     const bool vertical = style == juce::Slider::LinearVertical
                        || style == juce::Slider::LinearBarVertical;
@@ -447,14 +451,14 @@ void NymphesLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int 
     {
         const float trackH = 8.0f;
         auto track = r.withSizeKeepingCentre (r.getWidth(), trackH);
-        g.setColour (withAlpha (kWellBlue, 0.9f));
+        g.setColour (withAlpha (trackColour, 0.9f));
         g.fillRoundedRectangle (track, trackH * 0.5f);
 
         auto filled = track.withWidth (juce::jlimit (0.0f, track.getWidth(),
                                                      sliderPos - track.getX()));
         g.setColour (withAlpha (kPinkAccent, enabled ? 0.85f : 0.4f));
         g.fillRoundedRectangle (filled, trackH * 0.5f);
-        g.setColour (withAlpha (kLilacLine, 0.9f));
+        g.setColour (withAlpha (trackColour, 0.9f));
         g.drawRoundedRectangle (track.reduced (0.5f), trackH * 0.5f, 1.0f);
 
         auto cap = juce::Rectangle<float> (12.0f, 20.0f)
