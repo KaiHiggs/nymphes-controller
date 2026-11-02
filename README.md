@@ -1,11 +1,9 @@
-# Nymphes Controller
+# Dreadbox Nymphes Controller
 
 A VST3 plug-in and standalone app for the **Dreadbox Nymphes**: every MIDI CC
 parameter on a panel laid out like the instrument, and a preset browser for the
 98 preset slots.
 
-> Unofficial. Not affiliated with or endorsed by Dreadbox. "Nymphes" and
-> "Dreadbox" are their trademarks.
 
 ![Controls](notes/ui-after/controls.png)
 
@@ -101,6 +99,3 @@ tests/      CC map, preset safety, mod-edit pairing
 tools/      CC map reconciliation, UI capture helper
 docs/       build report and notes from how this was built
 ```
-
-The factory preset dumps and firmware are Dreadbox's files and are not in this
-repository. Tests that need them skip when they are absent.
