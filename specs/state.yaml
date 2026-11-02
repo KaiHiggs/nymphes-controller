@@ -6,9 +6,12 @@ bug_cycle:
   bug_id: BUG-001
   status: fixed_local
   verification: "12/12 CTest; VST3/Standalone built; hardware not exercised"
-  release: "v1.0.1 pending CI and publication; not installed locally"
+  release: "v1.0.1 via tag workflow; not installed locally"
 release:
   version: 1.0.1
-  ci_verified: false
+  ci_verified: true
+  verified_code_commit: 26eb9a68679af91b866b95ddcb31a0bc662dd595
+  verification_run: https://github.com/KaiHiggs/nymphes-controller/actions/runs/41528557194
+  platforms: "macOS universal + Windows x64; 12/12 CTest on each"
   coverage: "not instrumented; no percentage claimed"
   traceability: "BUG-001 mapped to midi_channel_selector_test; no release matrix"
