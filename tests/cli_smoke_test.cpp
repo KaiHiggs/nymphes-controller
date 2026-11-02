@@ -95,7 +95,11 @@ static std::string quote(const fs::path& p) { return "\"" + p.string() + "\""; }
 
 int main(int argc, char** argv) {
     const fs::path self = (argc > 0 && argv[0] != nullptr) ? fs::path(argv[0]) : fs::path(".");
+#if defined(_WIN32)
+    const fs::path cli = self.parent_path() / "nymphes-cli.exe";
+#else
     const fs::path cli = self.parent_path() / "nymphes-cli";
+#endif
     if (!fs::exists(cli)) {
         // Not a skip: this test exists to exercise that binary, and a missing binary
         // means the build is incomplete (it is built in the same bin/ directory).
@@ -135,7 +139,13 @@ int main(int argc, char** argv) {
     auto run = [&](const std::string& args) {
         Run r;
         const std::string cmd = quote(cli) + " " + args + " > " + quote(outFile) + " 2>&1";
+#if defined(_WIN32)
+        // cmd.exe /c strips its outer quotes; keep the executable/path quotes
+        // inside a second pair so paths containing spaces remain intact.
+        const int raw = std::system(("\"" + cmd + "\"").c_str());
+#else
         const int raw = std::system(cmd.c_str());
+#endif
         r.code = NYMPHES_SHELL_EXIT(raw);
         std::ifstream in(outFile);
         r.out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());

@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -117,10 +118,7 @@ Bytes mainSection()
 
 std::string tempPath (const char* leaf)
 {
-    const char* dir = std::getenv ("TMPDIR");
-    std::string p = (dir != nullptr && *dir != '\0') ? dir : "/tmp";
-    if (! p.empty() && p.back() != '/') p += '/';
-    return p + leaf;
+    return (std::filesystem::temp_directory_path() / leaf).string();
 }
 
 bool writeFile (const std::string& path, const Bytes& bytes)
