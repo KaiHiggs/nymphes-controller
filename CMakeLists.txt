@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(NymphesController VERSION 1.0.0 LANGUAGES C CXX)
+project(NymphesController VERSION 1.0.1 LANGUAGES C CXX)
 
 # =============================================================================
 # NymphesController — preset browser/saver + CC controller for the Dreadbox
@@ -279,6 +279,18 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/juce/ccengine_test.cpp")
 endif()
 
 # =============================================================================
+# The selector test owns an isolated engine; it never constructs a processor or
+# opens a MIDI port. Exercise real UI callbacks and host-state synchronisation.
+juce_add_console_app(midi_channel_selector_test PRODUCT_NAME "midi_channel_selector_test")
+target_sources(midi_channel_selector_test PRIVATE
+    tests/juce/midi_channel_selector_test.cpp plugin/cc/CCEngine.cpp)
+target_include_directories(midi_channel_selector_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(midi_channel_selector_test PRIVATE nymphes_core
+    juce::juce_audio_basics juce::juce_gui_basics)
+target_compile_definitions(midi_channel_selector_test PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+add_test(NAME midi_channel_selector_test COMMAND midi_channel_selector_test)
+
+# =============================================================================
 # The plugin: VST3 + Standalone
 # =============================================================================
 
@@ -288,7 +300,7 @@ if (NOT NYMPHES_PLUGIN_SOURCES)
 endif()
 
 juce_add_plugin(NymphesController
-    COMPANY_NAME              "Nymphes Fleet"
+    COMPANY_NAME              "cleanroom"
     BUNDLE_ID                 "com.nymphesfleet.nymphescontroller"
     PLUGIN_MANUFACTURER_CODE  Nymp
     PLUGIN_CODE               Nctr

@@ -1,0 +1,14 @@
+workflow_mode: solo-git
+active_flow: release
+bug_cycle:
+  current_step: 4
+  completed_steps: [1, 2, 3, 4]
+  bug_id: BUG-001
+  status: fixed_local
+  verification: "12/12 CTest; VST3/Standalone built; hardware not exercised"
+  release: "v1.0.1 pending CI and publication; not installed locally"
+release:
+  version: 1.0.1
+  ci_verified: false
+  coverage: "not instrumented; no percentage claimed"
+  traceability: "BUG-001 mapped to midi_channel_selector_test; no release matrix"

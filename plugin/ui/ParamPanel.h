@@ -26,6 +26,7 @@
 
 #include "plugin/ui/FaderCell.h"
 #include "plugin/ui/ModEdit.h"
+#include "plugin/ui/MidiChannelSelector.h"
 #include "plugin/ui/OptionList.h"
 #include "plugin/ui/ProcessorAccess.h"
 
@@ -88,6 +89,7 @@ private:
     Processor& proc;
     ModEditState mod;
     Surface surface;
+    MidiChannelSelector channelSelector;
 
     juce::OwnedArray<FaderCell> cells;
     juce::OwnedArray<OptionList> lists;

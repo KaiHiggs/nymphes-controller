@@ -64,13 +64,9 @@ public:
 
     // --- wiring -----------------------------------------------------------
     void setMidiSink (MidiSink sink);
-    /** 0 = omni, anything outside 1..16 = omni. NOTE: nothing in the UI calls this
-        today — the channel is only ever restored from saved state (setState), and
-        CC messages are CHANNEL-addressed while SysEx is not. A session saved with,
-        say, channel 5 therefore sends every CC on channel 5 while presets still
-        load, which on a unit left on channel 1 looks exactly like "the sliders do
-        nothing". Until there is a channel control, that state attribute is the
-        first thing to read when CCs are missing but SysEx works. */
+    /** 1..16 select the receive/transmit channel. 0 (or an invalid value) means
+        receive on all channels, transmit CCs on 1. Preset SysEx is independent of
+        this setting. Notifies the editor asynchronously; emits no MIDI. */
     void setMidiChannel (int oneBasedChannel);
     int  getMidiChannel() const noexcept;
     /** Optional host-parameter sync hook. Currently only recorded (never

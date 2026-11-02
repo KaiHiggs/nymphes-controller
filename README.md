@@ -65,6 +65,12 @@ synth directly (CCs and preset SysEx), so it works the same on any track. The
 port picker in the status bar selects another port; DUMP reads all 98 presets
 from the synth.
 
+In **Controls → MENU → MIDI CH**, choose the channel the Nymphes receives on.
+This controls the plug-in's routing; it does not change the synth's channel.
+The selection is saved with the project. **Omni (out 1)** accepts incoming CCs
+on every channel but sends CCs on channel 1. Preset SysEx ignores channel
+selection, so presets can load even when the sliders target the wrong channel.
+
 ## Building
 
 Requires CMake 3.22+ and a C++17 compiler (Xcode / Apple clang on macOS,

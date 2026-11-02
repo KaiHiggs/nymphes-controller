@@ -1,7 +1,20 @@
-VST3 plug-in and standalone app for the Dreadbox Nymphes: all 82 CCs on a
-panel laid out like the instrument, the hardware's mod-edit workflow, and a
-7 × 7 preset browser for the USER and FACTORY pages. Unofficial; not affiliated
-with Dreadbox.
+## Changes in v1.0.1
+
+- Added **Controls → MENU → MIDI CH**: select channels 1–16 or **Omni (out 1)**.
+  The control shows the saved routing and follows host state changes. Match it
+  to the synth's receive channel; preset SysEx is channel-independent.
+- Fixed soft-takeover crossings, malformed preset/text parsing, CLI verification
+  and file-error handling, and MIDI stream handling following an external review.
+- CC send failures now report an error instead of being silently ignored.
+- Changed the displayed plug-in creator to **cleanroom**, keeping the existing
+  plug-in identifiers for project compatibility.
+
+The channel control is covered by UI-to-engine-to-MIDI-sink tests. The original
+report that sliders did not change the synth still needs hardware confirmation;
+this release does not claim it is conclusively resolved. Some review findings
+remain deferred.
+
+Unofficial controller for the Dreadbox Nymphes; not affiliated with Dreadbox.
 
 | Download | Contents |
 |---|---|

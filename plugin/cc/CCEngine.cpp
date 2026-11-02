@@ -60,8 +60,14 @@ void CCEngine::setMidiSink (MidiSink newSink)
 
 void CCEngine::setMidiChannel (int oneBasedChannel)
 {
-    const juce::ScopedLock sl (stateLock);
-    midiChannel = (oneBasedChannel >= 1 && oneBasedChannel <= 16) ? oneBasedChannel : 0;
+    {
+        const juce::ScopedLock sl (stateLock);
+        const int channel = (oneBasedChannel >= 1 && oneBasedChannel <= 16) ? oneBasedChannel : 0;
+        if (midiChannel == channel)
+            return;
+        midiChannel = channel;
+    }
+    sendChangeMessage(); // keep an open editor in sync; changing routing emits no MIDI
 }
 
 int CCEngine::getMidiChannel() const noexcept
