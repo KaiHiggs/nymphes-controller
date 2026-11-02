@@ -197,10 +197,17 @@ int main(int argc, char** argv) {
         const fs::path lock = dir / "write_plan.lock";
         const Run r = run("write " + quote(goodSyx) + " --slot A1 --lock " + quote(lock));
         CHECK(r.code == 2, "write without --yes should exit 2, got %d:\n%s", r.code, r.out.c_str());
+#if defined(_WIN32)
+        // The CLI intentionally refuses device sessions without flock. Windows
+        // VST3/Standalone use WinMM directly; this headless tool is not shipped.
+        CHECK(r.out.find("no file locking; refusing a device session") != std::string::npos,
+              "Windows CLI must fail closed without device locking:\n%s", r.out.c_str());
+#else
         CHECK(r.out.find("originally FACTORY C2") != std::string::npos,
               "write plan must report the ORIGIN slot:\n%s", r.out.c_str());
         CHECK(r.out.find("originally USER A1") == std::string::npos,
               "write plan reported the destination as the origin:\n%s", r.out.c_str());
+#endif
     }
 
     // ---- 5. an unwritable --out must fail instead of printing "wrote ..." and exiting 0
@@ -237,13 +244,18 @@ int main(int argc, char** argv) {
         const fs::path lock = dir / "midi.lock";
         const Run a = run("cc 7 100 --channel 0 --lock " + quote(lock));
         CHECK(a.code == 2, "cc --channel 0 should exit 2, got %d:\n%s", a.code, a.out.c_str());
-        CHECK(a.out.find("--channel must be 1..16") != std::string::npos, "cc error text:\n%s",
+#if defined(_WIN32)
+        const char* expectedError = "no file locking; refusing a device session";
+#else
+        const char* expectedError = "--channel must be 1..16";
+#endif
+        CHECK(a.out.find(expectedError) != std::string::npos, "cc error text:\n%s",
               a.out.c_str());
         const Run b = run("cc 7 100 --channel 17 --lock " + quote(lock));
         CHECK(b.code == 2, "cc --channel 17 should exit 2, got %d:\n%s", b.code, b.out.c_str());
         const Run c = run("panic --channel 99 --lock " + quote(lock));
         CHECK(c.code == 2, "panic --channel 99 should exit 2, got %d:\n%s", c.code, c.out.c_str());
-        CHECK(c.out.find("--channel must be 1..16") != std::string::npos, "panic error text:\n%s",
+        CHECK(c.out.find(expectedError) != std::string::npos, "panic error text:\n%s",
               c.out.c_str());
     }
 
