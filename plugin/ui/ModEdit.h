@@ -45,7 +45,7 @@ struct ModEditState
     /** -1 = the faders set the parameters; 0..3 = they set that source's depths. */
     int source = -1;
 
-    bool active() const noexcept { return source >= 0; }
+    bool active() const noexcept { return source >= 0 && source < kModSourceCount; }
 
     int depth (int src, int depthCc) const noexcept
     {

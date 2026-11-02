@@ -28,6 +28,9 @@ void check (bool ok, const std::string& what)
 
 bool startsWith (const std::string& s, const std::string& p) { return s.rfind (p, 0) == 0; }
 
+constexpr int kExpectedDepthPairs = 36;
+constexpr int kModSourceSelectorCc = 30;
+
 std::string stripDepth (std::string s)
 {
     const std::string suffix = "_depth";
@@ -59,14 +62,18 @@ int main()
     for (const auto& p : kCCMap)
     {
         const std::string name = p.name;
-        if (! startsWith (name, "ms_") || p.cc == 30)
+        if (! startsWith (name, "ms_") || p.cc == kModSourceSelectorCc)
             continue;
         ++sharedDepthCount;
         check (claimedBy.count (p.cc) == 1,
                "depth CC " + std::to_string (p.cc) + " (" + name + ") has no panel control");
     }
-    check (sharedDepthCount == 36, "36 shared depth CCs, got " + std::to_string (sharedDepthCount));
-    check ((int) claimedBy.size() == 36, "36 pairs, got " + std::to_string (claimedBy.size()));
+    check (sharedDepthCount == kExpectedDepthPairs,
+           std::to_string (kExpectedDepthPairs) + " shared depth CCs, got "
+               + std::to_string (sharedDepthCount));
+    check ((int) claimedBy.size() == kExpectedDepthPairs,
+           std::to_string (kExpectedDepthPairs) + " pairs, got "
+               + std::to_string (claimedBy.size()));
 
     // 2. Naming: "ms_<x>_depth" is the depth of "<x>" (or of "<x>_depth"). The map
     //    names one pair differently; it is listed, not pattern-matched away.
@@ -80,10 +87,16 @@ int main()
         if (d == nullptr || b == nullptr)
             continue;
 
-        check (! b->isDiscrete(), std::string ("base ") + b->name + " is continuous (it is a fader)");
+        check (! b->isDiscrete(),
+               std::string ("base ") + b->name + " uses the controller's 0..127 range");
         check (! startsWith (b->name, "ms_"), std::string ("base ") + b->name + " is not itself a depth");
 
-        const std::string depthKey = stripDepth (std::string (d->name).substr (3));
+        const std::string depthName = d->name;
+        check (startsWith (depthName, "ms_") && depthName.size() > 3,
+               std::string ("depth ") + d->name + " (CC " + std::to_string (depth)
+                   + ") uses the ms_* naming key");
+        const std::string depthKey = startsWith (depthName, "ms_") && depthName.size() > 3
+                                       ? stripDepth (depthName.substr (3)) : depthName;
         const std::string baseKey = aliases.count (base) ? aliases.at (base) : stripDepth (b->name);
         check (depthKey == baseKey,
                std::string ("names agree: ") + b->name + " (CC " + std::to_string (base) + ") <-> "
@@ -91,21 +104,40 @@ int main()
     }
 
     // 3. Controls without a depth twin stay base controls in mod edit.
-    for (int cc : { 1, 7, 17, 22, 23, 28, 29, 30, 64, 68 })
+    for (int cc : { 1, 7, 17, 22, 23, 28, 29, kModSourceSelectorCc, 64, 68 })
+    {
+        check (findCC (cc) != nullptr, "CC " + std::to_string (cc) + " exists in the map");
         check (depthCcFor (cc) == -1, "CC " + std::to_string (cc) + " has no depth twin");
+    }
 
     // 4. The state: unknown until seen, per source, and bounds-safe.
     ui::ModEditState state;
     check (! state.active(), "starts in base mode");
+    state.source = ui::kModSourceCount;
+    check (! state.active(), "source past the end is not active");
+    state.source = -1;
+    check (! state.active(), "negative source is not active");
+    state.source = 0;
+    check (state.active(), "valid source is active");
     check (state.depth (2, 42) == -1, "a depth never seen is unknown");
     state.remember (2, 42, 90);
     check (state.depth (2, 42) == 90, "a remembered depth reads back");
     check (state.depth (1, 42) == -1, "depths are per source");
-    state.remember (7, 42, 1);
+    state.remember (ui::kModSourceCount, 42, 1);
     state.remember (0, 300, 1);
-    check (state.depth (7, 42) == -1 && state.depth (0, 300) == -1, "out-of-range is ignored");
+    state.remember (-1, 42, 1);
+    state.remember (0, -1, 1);
+    check (state.depth (ui::kModSourceCount, 42) == -1, "source past the end is ignored");
+    check (state.depth (0, 300) == -1, "CC past 127 is ignored");
+    check (state.depth (-1, 42) == -1, "negative source is ignored");
+    check (state.depth (0, -1) == -1, "negative CC is ignored");
+
+    state.remember (ui::kModSourceCount - 1, 127, 5);
+    check (state.depth (ui::kModSourceCount - 1, 127) == 5,
+           "last valid source and CC are stored");
 
     if (failures == 0)
-        std::printf ("ui_modedit_test: all checks passed (36 depth pairs)\n");
+        std::printf ("ui_modedit_test: all checks passed (%d depth pairs)\n",
+                     kExpectedDepthPairs);
     return failures == 0 ? 0 : 1;
 }

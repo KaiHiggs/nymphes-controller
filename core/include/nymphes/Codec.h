@@ -19,7 +19,11 @@
 //
 // Safety rule enforced by this API: a preset addressed to the FACTORY page can never
 // be serialised with the write flag set unless the caller passes an explicit override
-// that names the slot. Factory presets are read-only by default (brief hard constraint).
+// at the call site (encodeFrame(persist=true, allowFactoryWrite=true)). The override is
+// a deliberate boolean, not a slot token: naming the slot again would add no safety,
+// because a caller that passes `true` has already decided which preset it is writing.
+// encodeFrameRaw() is the byte-identity path and is NOT covered by this rule - see it.
+// Factory presets are read-only by default (brief hard constraint).
 
 #pragma once
 
@@ -55,9 +59,11 @@ inline constexpr std::uint8_t kFlagWrite = 0x01;
 // ------------------------------------------------------------------ low level
 std::uint8_t crc8(const std::uint8_t* data, std::size_t n);
 
-// 2098 nibble bytes -> 1049 payload bytes (low nibble first).
+// 2n nibble bytes -> n payload bytes (low nibble first). n must land in
+// kMinPayloadSize..kMaxPayloadSize; kPayloadSize is only the canonical size, so a
+// received payload may be longer (see the payload note above).
 bool unpackNibbles(const std::uint8_t* nib, std::size_t n, Bytes& payload);
-// 1049 payload bytes -> 2098 nibble bytes.
+// n payload bytes -> 2n nibble bytes (any n; kPayloadSize is canonical, not required).
 Bytes packNibbles(const Bytes& payload);
 
 // ------------------------------------------------------------------ protobuf
@@ -144,6 +150,9 @@ public:
 
     // Exact frame as it came off the wire / is stored in a .syx, flag byte preserved.
     // Use this for file I/O and for byte-identity checks against the vendor dumps.
+    // It preserves whatever flag() holds, including a write flag on a FACTORY address,
+    // so it does NOT enforce the factory rule: never transmit its output to the device.
+    // encodeFrame(persist, allowFactoryWrite) is the transmit path and does enforce it.
     Bytes encodeFrameRaw() const;
     std::uint8_t flag() const { return flag_; }
     void setFlag(std::uint8_t f) { flag_ = f; }
@@ -156,8 +165,8 @@ public:
     std::size_t payloadSize() const { return payload_.size(); }
     std::size_t frameSize() const { return 11 + 2 * payload_.size(); }
     bool crcValid() const;
-    void setPayload(Bytes p);                              // recomputes/validates nothing
-    void seal();                                           // recompute CRC over [1..1048]
+    void setPayload(Bytes p);                              // re-parses the tree; does not recompute the CRC
+    void seal();                                           // recompute CRC over [1..payloadSize()-1]
 
     // ---- address
     const Address& address() const { return addr_; }
@@ -192,7 +201,10 @@ public:
     static std::vector<Bytes> splitSyx(const Bytes& blob);
 
     // .txt : human-readable and losslessly round-trippable. `payload=` carries the exact
-    // bytes; a per-parameter line that disagrees with the payload is applied as an edit.
+    // bytes and must be a CRC-valid payload of kMinPayloadSize..kMaxPayloadSize bytes; a
+    // per-parameter line that disagrees with the payload is applied as an edit, and a line
+    // that cannot be applied (missing section, bad index, unknown key) fails the import
+    // through the error string rather than returning true with the edit silently dropped.
     std::string toText() const;
     static bool fromText(const std::string& text, Preset& out, std::string* err = nullptr);
 
@@ -200,8 +212,9 @@ public:
     bool isCanonical() const { return canonical_; }
 
 private:
+    void resync();           // re-encode msg_ into payload_, refresh CRC + canonical_
     Address addr_{};
-    Bytes payload_;          // 1049
+    Bytes payload_;          // [0] CRC-8, [1..] protobuf; kPayloadSize is canonical only
     PbMessage msg_;
     bool canonical_ = true;
     bool edited_ = true;     // recompute on every encode unless false

@@ -53,6 +53,10 @@ int main()
         const auto& p = kCCMap[i];
         check (p.name != nullptr && p.name[0] != '\0', "name present for CC " + std::to_string (p.cc));
         check (p.minValue <= p.maxValue, "range sane for CC " + std::to_string (p.cc));
+        // MIDI values are 0..127; a table edit outside that domain would pass the
+        // ordering check above and break every controller mapping.
+        check (p.minValue >= 0 && p.maxValue <= 127,
+               "range inside MIDI 0..127 for CC " + std::to_string (p.cc));
         check (indexOfCC (p.cc) == i, "indexOfCC round-trip for CC " + std::to_string (p.cc));
     }
 
@@ -77,6 +81,19 @@ int main()
                    "discrete range for CC " + std::to_string (d.cc));
             check (p->valueNames != nullptr,
                    "discrete CC " + std::to_string (d.cc) + " has value names");
+            // The names are indexed by value - min, so a label list that does not
+            // match the range would silently read out of bounds (or lose a name).
+            if (p->valueNames != nullptr)
+            {
+                int labelCount = 1;
+                for (const char* c = p->valueNames; *c != '\0'; ++c)
+                    if (*c == '|')
+                        ++labelCount;
+                check (labelCount == d.hi - d.lo + 1,
+                       "discrete CC " + std::to_string (d.cc) + " has one label per value ("
+                           + std::to_string (labelCount) + " vs " + std::to_string (d.hi - d.lo + 1)
+                           + ")");
+            }
         }
     }
 
@@ -89,9 +106,27 @@ int main()
         check (specs[(std::size_t) i].cc == kCCMap[i].cc, "ccui order matches kCCMap order");
         check (specs[(std::size_t) i].minValue == kCCMap[i].minValue, "ccui min matches");
         check (specs[(std::size_t) i].maxValue == kCCMap[i].maxValue, "ccui max matches");
-        const bool discreteInTable = kCCMap[i].valueNames != nullptr;
+        const bool discreteInTable = kCCMap[i].isDiscrete();
+        // Compare against the DATA OWNER's rule, not against "has labels": the
+        // table carries five wave names for CC 19/25 whose range is 0..127, so a
+        // label-presence rule would disagree with kCCMap[i].isDiscrete().
         check (specs[(std::size_t) i].isDiscrete() == discreteInTable,
                "ccui discreteness matches for CC " + std::to_string (kCCMap[i].cc));
+        check (specs[(std::size_t) i].isDiscrete() == kCCMap[i].isDiscrete(),
+               "ccui discreteness matches the table rule for CC " + std::to_string (kCCMap[i].cc));
+
+        // A managerable combo box needs one name per value. Every discrete
+        // parameter in the table satisfies that; the wave CCs are the documented
+        // exception and are continuous, so they must NOT be offered as a combo
+        // (the bug: a 5-item combo clamped every value >= 4 to "random").
+        const auto& s = specs[(std::size_t) i];
+        if (s.isDiscrete() && s.hasValueNames())
+            check (s.labelsSpanRange(),
+                   "CC " + std::to_string (kCCMap[i].cc) + " labels span its range");
+        if (! s.isDiscrete() && s.hasValueNames())
+            check (! s.labelsSpanRange(),
+                   "continuous CC " + std::to_string (kCCMap[i].cc)
+                       + " with zone names is not offered as a combo");
     }
 
     // 7. The modulation-depth classification matches the device's two ranges.
@@ -104,16 +139,37 @@ int main()
     }
 
     // 8. Play mode labels are the six the device documents, in order.
-    if (const auto* pm = findCC (17))
     {
-        const auto& s = specs[(std::size_t) indexOfCC (17)];
-        check (s.labels.size() == 6, "play mode has 6 labels");
-        if (s.labels.size() == 6)
+        const int playModeIndex = indexOfCC (17);
+        // indexOfCC indexes kCCMap, not specs: if the view ever diverges, indexing
+        // specs with it reads past the end (and this is the test that exists to
+        // catch exactly that divergence).
+        check (playModeIndex >= 0 && (std::size_t) playModeIndex < specs.size(),
+               "indexOfCC(17) is inside the UI view");
+        if (playModeIndex >= 0 && (std::size_t) playModeIndex < specs.size())
         {
-            check (s.labels[0] == "poly" || s.labels[0] == "POLY", "play mode label 0 is poly");
-            check (s.labels[5] == "MONO" || s.labels[5] == "mono", "play mode label 5 is mono");
+            const auto& s = specs[(std::size_t) playModeIndex];
+            check (s.labels.size() == 6, "play mode has 6 labels");
+            if (s.labels.size() == 6)
+            {
+                check (s.labels[0] == "poly" || s.labels[0] == "POLY", "play mode label 0 is poly");
+                check (s.labels[5] == "MONO" || s.labels[5] == "mono", "play mode label 5 is mono");
+            }
         }
-        (void) pm;
+    }
+
+    // 9. The three CC numbers CcSpec hardcodes still name the parameters the UI
+    //    assumes (the constants exist only so the engine path can name them).
+    {
+        const auto* ms = findCC (ccui::kModSourceSelectorCc);
+        check (ms != nullptr && std::string (ms->name) == "ms_source",
+               "kModSourceSelectorCc names ms_source");
+        const auto* sus = findCC (ccui::kSustainCc);
+        check (sus != nullptr && std::string (sus->name) == "sustain_pedal",
+               "kSustainCc names sustain_pedal");
+        const auto* mw = findCC (ccui::kModWheelCc);
+        check (mw != nullptr && std::string (mw->name) == "mod_wheel",
+               "kModWheelCc names mod_wheel");
     }
 
     if (failures == 0)

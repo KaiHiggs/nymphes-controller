@@ -10,7 +10,7 @@ namespace nymphes::ui
 // will fight the user's drag.
 
 CcStrip::CcStrip (Processor& processor, const ccui::CcSpec& s)
-    : proc (processor), spec (s)
+    : proc (processor), spec (s)   // by value: see the lifetime note in the header
 {
     nameLabel.setText (juce::String (spec.name.data(), (int) spec.name.size()),
                        juce::dontSendNotification);
@@ -64,6 +64,11 @@ CcStrip::CcStrip (Processor& processor, const ccui::CcSpec& s)
         }
         else
         {
+            // Another parameter may already be learning. Retire it through the
+            // engine so the state is clean and the broadcast tells every strip.
+            if (engine.isLearning())
+                engine.cancelLearn();
+
             engine.beginLearn ((int) spec.cc);
             if (onLearnRequested)
                 onLearnRequested ((int) spec.cc);
@@ -73,7 +78,9 @@ CcStrip::CcStrip (Processor& processor, const ccui::CcSpec& s)
     addAndMakeVisible (learnButton);
 
     ccEngine (proc).addChangeListener (this);
-    startTimerHz (4);
+    // No unconditional timer: at 4 Hz x 82 strips that is ~330 callbacks/second to
+    // blink one button. updateLearnVisual() starts it only while this strip is the
+    // learn target.
     refresh();
     updateLearnVisual();
 }
@@ -105,7 +112,7 @@ void CcStrip::paint (juce::Graphics& g)
 
     // A modulation-depth parameter is shared by all four mod sources; mark it so
     // the user can see the value depends on CC 30.
-    if (spec.isModDepth)
+    if (spec.isModDepth())
     {
         g.setColour (juce::Colour (0xff5b6b8c));
         g.fillEllipse (r.getRight() - 9.0f, r.getY() + 4.0f, 4.0f, 4.0f);
@@ -132,9 +139,14 @@ void CcStrip::sliderChanged()
 {
     if (updating)
         return;
-    updating = true;
-    ccEngine (proc).setValue ((int) spec.cc, (int) juce::roundToInt (slider.getValue()));
-    updating = false;
+    {
+        // RAII: if setValue ever throws (a juce::String allocation in the sink) the
+        // flag is still cleared, and the strip is not left permanently deaf.
+        const juce::ScopedValueSetter<bool> guard (updating, true);
+        ccEngine (proc).setValue ((int) spec.cc, (int) juce::roundToInt (slider.getValue()));
+    }
+    // Outside the guard on purpose: refresh() defers itself while the flag is set,
+    // so calling it inside would only queue the work for the next unrelated change.
     refresh();
 }
 
@@ -142,20 +154,36 @@ void CcStrip::comboChanged()
 {
     if (updating)
         return;
-    updating = true;
-    const int index = combo.getSelectedId() - 1;
-    if (index >= 0)
-        ccEngine (proc).setValue ((int) spec.cc, (int) spec.minValue + index);
-    updating = false;
+    {
+        const juce::ScopedValueSetter<bool> guard (updating, true);
+        const int index = combo.getSelectedId() - 1;
+        if (index >= 0)
+            ccEngine (proc).setValue ((int) spec.cc, (int) spec.minValue + index);
+    }
     refresh();
 }
 
 void CcStrip::refresh()
 {
+    // Dropping the request left the labels stale until the next unrelated change;
+    // remember it and re-apply once the current writer is done.
     if (updating)
+    {
+        refreshPending = true;
         return;
+    }
 
-    updating = true;
+    do
+    {
+        refreshPending = false;
+        applyEngineToControls();
+    }
+    while (refreshPending);
+}
+
+void CcStrip::applyEngineToControls()
+{
+    const juce::ScopedValueSetter<bool> guard (updating, true);
     auto& engine = ccEngine (proc);
     const int v = engine.getValue ((int) spec.cc);
 
@@ -178,8 +206,6 @@ void CcStrip::refresh()
     // instead of showing a value the user is not actually setting.
     if (engine.isWaitingForTakeover ((int) spec.cc))
         valueLabel.setText ("waiting", juce::dontSendNotification);
-
-    updating = false;
 }
 
 void CcStrip::updateLearnVisual()
@@ -195,6 +221,18 @@ void CcStrip::updateLearnVisual()
     learnButton.setTooltip (learned >= 0
         ? "MIDI learn: driven by CC " + juce::String (learned) + " - click to re-learn"
         : juce::String ("MIDI learn: click, then move a control on your keyboard"));
+
+    // Blink only while this strip is the learn target.
+    if (learning && ! isTimerRunning())
+    {
+        learnBlinkOn = true;
+        startTimerHz (4);
+    }
+    else if (! learning && isTimerRunning())
+    {
+        stopTimer();
+        learnBlinkOn = false;
+    }
     repaint();
 }
 

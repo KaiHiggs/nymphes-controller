@@ -31,6 +31,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -128,13 +129,21 @@ int cmdVerify (const Options& o)
 
     const auto frames = splitSyx (image);
     std::vector<Preset> presets;
+    // The source frame of each decoded preset, kept alongside it: `presets` is a
+    // FILTERED subset, so presets[i] no longer pairs with frames[i] as soon as one
+    // frame is rejected, and the re-encode gate below would compare the wrong bytes.
+    std::vector<std::vector<uint8_t>> decodedFrom;
     std::vector<std::string> errors;
 
     for (size_t i = 0; i < frames.size(); ++i)
     {
         Preset p;
         std::string err;
-        if (decodeFrame (frames[i].data(), frames[i].size(), p, &err)) presets.push_back (p);
+        if (decodeFrame (frames[i].data(), frames[i].size(), p, &err))
+        {
+            presets.push_back (p);
+            decodedFrom.push_back (frames[i]);
+        }
         else errors.push_back ("message " + std::to_string (i) + ": " + err);
     }
 
@@ -153,7 +162,7 @@ int cmdVerify (const Options& o)
         // re-serialise byte-for-byte (the slot-write path depends on exactly that),
         // and the parsed protobuf must reproduce the payload (otherwise editing a
         // preset would silently rewrite untouched fields).
-        if (p.encodeFrameRaw() != frames[i]) ++badReencode;
+        if (p.encodeFrameRaw() != decodedFrom[i]) ++badReencode;
         if (! p.isCanonical()) ++nonCanonical;
     }
 
@@ -188,8 +197,16 @@ int cmdList (const Options& o)
     for (size_t i = 0; i < presets.size(); ++i)
     {
         const auto& p = presets[i];
-        std::printf ("%3zu  %-12s %4zu B  %s\n", i, displayName (p).c_str(), p.payloadSize(),
-                     summaryLine (p).c_str() + displayName (p).size() + 1);
+        const std::string name = displayName (p);
+        const std::string summary = summaryLine (p);
+        // summaryLine() begins with "%-12s " (the slot padded to 12, then one space),
+        // so its text starts at max(12, name.size()) + 1 - not at name.size() + 1.
+        // Strip the name and the padding after it; this printf supplies the separator
+        // for every name length instead of inheriting a different number of spaces.
+        const size_t at = summary.find (name);
+        std::string rest = (at == std::string::npos) ? summary : summary.substr (at + name.size());
+        rest.erase (0, rest.find_first_not_of (' '));
+        std::printf ("%3zu  %-12s %4zu B  %s\n", i, name.c_str(), p.payloadSize(), rest.c_str());
     }
     return 0;
 }
@@ -275,7 +292,13 @@ int cmdSplit (const Options& o)
     if (o.positional.empty()) { std::fprintf (stderr, "split: need a .syx path\n"); return 2; }
     const std::string dir = o.get ("--outdir");
     if (dir.empty()) { std::fprintf (stderr, "split: need --outdir\n"); return 2; }
-    std::filesystem::create_directories (dir);
+    std::error_code dirErr;
+    std::filesystem::create_directories (dir, dirErr);
+    if (dirErr)
+    {
+        std::fprintf (stderr, "cannot create %s: %s\n", dir.c_str(), dirErr.message().c_str());
+        return 1;
+    }
 
     std::string err;
     const auto presets = importSyxFile (o.positional[0], err);
@@ -334,7 +357,12 @@ int cmdTxt (const Options& o)
 
     const std::string out = o.get ("--out");
     std::ofstream f;
-    if (! out.empty()) f.open (out, std::ios::trunc);
+    if (! out.empty())
+    {
+        f.open (out, std::ios::trunc);
+        if (! f.is_open())
+        { std::fprintf (stderr, "cannot open %s for writing\n", out.c_str()); return 1; }
+    }
     std::ostream& os = out.empty() ? std::cout : f;
 
     os << "# Nymphes preset " << displayName (p) << "\n";
@@ -356,7 +384,12 @@ int cmdExportTxt (const Options& o)
 
     const std::string out = o.get ("--out");
     std::ofstream f;
-    if (! out.empty()) f.open (out, std::ios::trunc);
+    if (! out.empty())
+    {
+        f.open (out, std::ios::trunc);
+        if (! f.is_open())
+        { std::fprintf (stderr, "cannot open %s for writing\n", out.c_str()); return 1; }
+    }
     std::ostream& os = out.empty() ? std::cout : f;
 
     const auto fields = describe (presets.front());
@@ -423,19 +456,6 @@ public:
         return false;
     }
 
-    size_t drain (int timeoutMs, std::vector<Preset>& out)
-    {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds (timeoutMs);
-        while (std::chrono::steady_clock::now() < deadline)
-        {
-            Preset p;
-            std::string err;
-            if (awaitPreset (p, 60, err)) out.push_back (p);
-            std::this_thread::sleep_for (std::chrono::milliseconds (5));
-        }
-        return out.size();
-    }
-
     void reset() { std::lock_guard<std::mutex> lock (mutex_); incoming_.clear(); }
 
     /** Send the vendor's documented full-dump request and collect every preset frame
@@ -492,8 +512,7 @@ bool readSlot (DeviceSession& session, Page page, Slot slot, Preset& out,
     if (received == 0)
     {
         if (error.empty())
-            error = "the device sent nothing after the full-dump request (is it in a menu?";
-        if (error.empty()) error = "no frames received";
+            error = "the device sent nothing after the full-dump request (is it in a menu?)";
         return false;
     }
 
@@ -588,6 +607,10 @@ int cmdWrite (const Options& o)
     auto presets = importSyxFile (o.positional[0], err);
     if (presets.empty()) { std::fprintf (stderr, "no preset in %s: %s\n", o.positional[0].c_str(), err.c_str()); return 1; }
     Preset toWrite = presets.front();
+    // The name of the slot the preset CAME FROM, captured before setAddress()
+    // retargets it: printing it afterwards reports the destination ("originally
+    // USER A1") right before an irreversible device write.
+    const std::string originName = displayName (toWrite);
 
     // Move the preset to the requested USER slot. The payload is carried verbatim;
     // only the address and the CRC are touched, so optional fields and negative
@@ -601,7 +624,7 @@ int cmdWrite (const Options& o)
     std::printf ("plan\n");
     std::printf ("  slot      USER %s\n", slot.toString().c_str());
     std::printf ("  source    %s (originally %s, payload %zu B)\n", o.positional[0].c_str(),
-                 displayName (toWrite).c_str(), toWrite.payloadSize());
+                 originName.c_str(), toWrite.payloadSize());
     std::printf ("  steps     dump-read original -> write -> dump-read back -> compare -> restore -> verify\n");
 
     if (! o.has ("--yes"))
@@ -703,7 +726,14 @@ int cmdCapture (const Options& o)
     // Collect until the device goes quiet rather than trusting --seconds: measured,
     // 78 of 98 frames arrive in 5 s and the rest by ~9 s, so a fixed short window
     // silently truncates the dump.
-    session.requestFullDump (std::max (seconds, 1) * 1000, 2500, captured, error);
+    if (session.requestFullDump (std::max (seconds, 1) * 1000, 2500, captured, error) == 0
+        && ! error.empty())
+    {
+        // requestFullDump() sets `error` only on a send failure; without this the user
+        // was told "nothing received" for a port that never carried the request.
+        std::fprintf (stderr, "dump request failed: %s\n", error.c_str());
+        return 1;
+    }
 
     if (captured.empty()) { std::fprintf (stderr, "nothing received\n"); return 1; }
     std::string werr;
@@ -731,12 +761,25 @@ int cmdDumpRequest (const Options& o)
     return 0;
 }
 
+/** --channel is 1..16 on the command line; MidiPort takes 0..15. Validating here makes
+    an out-of-range channel a usage error (exit 2) with a clear message instead of a
+    session that opens and then silently drops the message. */
+static bool channelFromOptions (const Options& o, int& channel)
+{
+    const int ch = o.getInt ("--channel", 1);
+    if (ch < 1 || ch > 16) return false;
+    channel = ch - 1;
+    return true;
+}
+
 int cmdCC (const Options& o)
 {
     if (o.positional.size() < 2) { std::fprintf (stderr, "cc: need <cc> <value>\n"); return 2; }
     const int cc = std::atoi (o.positional[0].c_str());
     const int value = std::atoi (o.positional[1].c_str());
-    const int channel = o.getInt ("--channel", 1) - 1;
+    int channel = 0;
+    if (! channelFromOptions (o, channel))
+    { std::fprintf (stderr, "cc: --channel must be 1..16\n"); return 2; }
 
     const auto* spec = findCC (cc);
     if (spec == nullptr) { std::fprintf (stderr, "CC %d is not a Nymphes parameter\n", cc); return 2; }
@@ -757,12 +800,14 @@ int cmdCC (const Options& o)
 
 int cmdPanic (const Options& o)
 {
-    const int channel = o.getInt ("--channel", 1) - 1;
+    int channel = 0;
+    if (! channelFromOptions (o, channel))
+    { std::fprintf (stderr, "panic: --channel must be 1..16\n"); return 2; }
     std::string error;
     DeviceSession session;
     if (! session.open (error)) { std::fprintf (stderr, "cannot open the Nymphes port: %s\n", error.c_str()); return 1; }
-    session.port().sendCC (channel, 123, 0);
-    session.port().sendCC (channel, 120, 0);
+    if (! session.port().sendCC (channel, 123, 0) || ! session.port().sendCC (channel, 120, 0))
+    { std::fprintf (stderr, "panic: send failed\n"); return 1; }
     std::printf ("sent      all-sound-off + all-notes-off on channel %d\n", channel + 1);
     return 0;
 }

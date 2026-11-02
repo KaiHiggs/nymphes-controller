@@ -5,6 +5,7 @@
 // failing to link.
 
 #include "MidiPort.h"
+#include "MidiStream.h"
 
 #if ! defined (__APPLE__) && ! defined (_WIN32)
 
@@ -30,8 +31,11 @@ std::vector<MidiDeviceInfo> MidiPort::listSources()      { return {}; }
 
 bool MidiPort::looksLikeNymphes (const MidiDeviceInfo& info)
 {
-    return info.name.find ("Nymphes") != std::string::npos
-        || info.model.find ("Nymphes") != std::string::npos;
+    // Same rule as the real backends, through the one shared helper: this platform
+    // has no OS MIDI, but a caller's synthetic MidiDeviceInfo must be classified
+    // exactly as it would be on macOS/Windows (case-insensitive name or model).
+    return midi_detail::containsIgnoreCase (info.name, "nymphes")
+        || midi_detail::containsIgnoreCase (info.model, "nymphes");
 }
 
 bool MidiPort::open (const std::string&, std::string* error)
@@ -65,4 +69,4 @@ void MidiPort::setConnectionCallback (ConnectionCallback cb) { impl->connectionC
 
 } // namespace nymphes
 
-#endif // ! __APPLE__
+#endif // ! defined (__APPLE__) && ! defined (_WIN32)

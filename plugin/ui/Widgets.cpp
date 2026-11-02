@@ -9,6 +9,13 @@ namespace nymphes::ui
 
 using namespace theme;
 
+namespace
+{
+constexpr int kDumpButtonW = 58;
+constexpr int kConnectButtonW = 78;
+constexpr int kPortBoxW = 196;
+}
+
 //==============================================================================
 // PanelCard
 //==============================================================================
@@ -57,7 +64,6 @@ void PanelCard::paint (juce::Graphics& g)
     {
         auto r = getLocalBounds().toFloat().reduced ((float) kPlateInset, (float) kPlateInset);
         auto badge = juce::Rectangle<float> (30.0f, 15.0f)
-                         .withRight (r.getRight() - 10.0f)
                          .withCentre ({ r.getRight() - 25.0f, r.getY() });
         drawPill (g, badge, withAlpha (kWellBlue, 0.9f), kLilacLine);
         g.setColour (kCreamMute);
@@ -140,6 +146,7 @@ void SegmentedNav::mouseExit (const juce::MouseEvent&)
     if (hovered != -1)
     {
         hovered = -1;
+        setMouseCursor (juce::MouseCursor::NormalCursor);
         repaint();
     }
 }
@@ -229,7 +236,7 @@ StatusRail::StatusRail (Processor& processor)
         const auto name = portBox.getText();
         if (name.isNotEmpty())
             proc.openMidiPort (name);
-        deviceOpen = proc.getDeviceStatus().containsIgnoreCase ("open");
+        deviceOpen = proc.getMidi().isOpen();
         repaint();
     };
     addAndMakeVisible (portBox);
@@ -249,6 +256,7 @@ StatusRail::StatusRail (Processor& processor)
 
     refreshPorts();
     statusText = proc.getDeviceStatus();
+    deviceOpen = proc.getMidi().isOpen();
 }
 
 StatusRail::~StatusRail()
@@ -292,7 +300,7 @@ void StatusRail::connectRequested()
     refreshPorts();
     proc.openMidiPort (portBox.getText());
     statusText = proc.getDeviceStatus();
-    deviceOpen = statusText.containsIgnoreCase ("open");
+    deviceOpen = proc.getMidi().isOpen();
     repaint();
 }
 
@@ -302,7 +310,7 @@ void StatusRail::changeListenerCallback (juce::ChangeBroadcaster*)
     if (s != statusText)
     {
         statusText = s;
-        deviceOpen = s.containsIgnoreCase ("open");
+        deviceOpen = proc.getMidi().isOpen();
         repaint();
     }
 }
@@ -311,11 +319,11 @@ void StatusRail::resized()
 {
     auto r = getLocalBounds().reduced (kGapL, 0);
 
-    dumpButton.setBounds (r.removeFromRight (58).withSizeKeepingCentre (58, 20));
+    dumpButton.setBounds (r.removeFromRight (kDumpButtonW).withSizeKeepingCentre (kDumpButtonW, 20));
     r.removeFromRight (kGapS);
-    connectButton.setBounds (r.removeFromRight (78).withSizeKeepingCentre (78, 20));
+    connectButton.setBounds (r.removeFromRight (kConnectButtonW).withSizeKeepingCentre (kConnectButtonW, 20));
     r.removeFromRight (kGapS);
-    portBox.setBounds (r.removeFromRight (196).withSizeKeepingCentre (196, 20));
+    portBox.setBounds (r.removeFromRight (kPortBoxW).withSizeKeepingCentre (kPortBoxW, 20));
 }
 
 void StatusRail::paint (juce::Graphics& g)
@@ -340,7 +348,7 @@ void StatusRail::paint (juce::Graphics& g)
     g.fillEllipse (juce::Rectangle<float> (6.0f, 6.0f).withCentre (dot));
 
     auto text = r.withTrimmedLeft (kGapL + 16.0f);
-    text.removeFromRight (58 + 78 + 196 + kGapS * 2 + kGapL);
+    text.removeFromRight (kDumpButtonW + kConnectButtonW + kPortBoxW + kGapS * 2 + kGapL);
 
     g.setColour (deviceOpen ? kCreamDim : kCreamMute);
     g.setFont (fontMicro());

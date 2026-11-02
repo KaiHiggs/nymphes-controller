@@ -4,9 +4,15 @@
 //   ./devcheck <file.syx>
 #include "nymphes/Codec.h"
 #include <cstdio>
+#include <exception>
 #include <map>
 using namespace nymphes;
-int main(int, char** argv) {
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        std::printf("usage: %s <file.syx>\n", argv[0]);
+        return 2;
+    }
+    try {
     std::vector<Preset> ps;
     std::string err;
     if (!Preset::readSyx(argv[1], ps, &err)) { std::printf("FAIL read: %s\n", err.c_str()); return 1; }
@@ -23,7 +29,14 @@ int main(int, char** argv) {
         if (q.payload() != ps[i].payload()) { std::printf("FAIL txt payload at %zu\n", i); ++bad; }
     }
     std::printf("frames %zu  payload sizes:", ps.size());
-    for (auto& kv : sizes) std::printf(" %zu(x%d)", kv.first, kv.second);
+    for (const auto& kv : sizes) std::printf(" %zu(x%d)", kv.first, kv.second);
     std::printf("\nbad=%d\n", bad);
     return bad == 0 ? 0 : 1;
+    } catch (const std::exception& ex) {
+        std::printf("FAIL exception: %s\n", ex.what());
+        return 1;
+    } catch (...) {
+        std::printf("FAIL unknown exception\n");
+        return 1;
+    }
 }

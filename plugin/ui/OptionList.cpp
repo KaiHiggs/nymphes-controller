@@ -32,10 +32,20 @@ void OptionList::bindToCc (int cc)
 {
     const auto* spec = ccui::findSpec (cc);
     const int lo = spec != nullptr ? spec->minValue : 0;
-    getIndex = [this, cc, lo] { return ccEngine (proc).getValue (cc) - lo; };
-    setIndex = [this, cc, lo] (int i) { ccEngine (proc).setValue (cc, lo + i); };
+    const int hi = spec != nullptr
+                     ? juce::jmin (spec->maxValue, lo + juce::jmax (0, options.size() - 1))
+                     : lo + juce::jmax (0, options.size() - 1);
+    getIndex = [this, cc, lo, hi]
+    {
+        return juce::jlimit (lo, hi, ccEngine (proc).getValue (cc)) - lo;
+    };
+    setIndex = [this, cc, lo, hi] (int i)
+    {
+        ccEngine (proc).setValue (cc, juce::jlimit (lo, hi, lo + i));
+    };
     setTooltip ((spec != nullptr ? juce::String (spec->name.data(), (int) spec->name.size()) : title)
                 + "   (CC " + juce::String (cc) + ")");
+    repaint();
 }
 
 int OptionList::preferredHeight() const
@@ -54,8 +64,10 @@ juce::Rectangle<int> OptionList::rowBounds (int index) const
         return { r.getX(), r.getY() + index * kRowH, r.getWidth(), kRowH };
 
     const int n = juce::jmax (1, options.size());
-    const int w = r.getWidth() / n;
-    return { r.getX() + index * w, r.getY(), index == n - 1 ? r.getWidth() - w * (n - 1) : w, kRowH };
+    const int w = juce::jmax (1, r.getWidth() / n);
+    const int x = r.getX() + index * w;
+    const int right = r.getRight();
+    return { x, r.getY(), juce::jmax (1, juce::jmin (w, right - x)), kRowH };
 }
 
 int OptionList::rowAt (juce::Point<int> p) const
@@ -84,7 +96,7 @@ void OptionList::paint (juce::Graphics& g)
         const bool on = i == lit;
         const bool enabled = ! isRowEnabled || isRowEnabled (i);
 
-        if (on)
+        if (on && enabled)
         {
             g.setColour (accent);
             g.fillRoundedRectangle (row, row.getHeight() * 0.5f);

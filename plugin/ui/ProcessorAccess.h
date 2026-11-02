@@ -37,6 +37,7 @@
 
 #include "plugin/PluginProcessor.h"
 #include "plugin/cc/CCEngine.h"
+#include "plugin/ui/SlotIndex.h"
 #include "preset/Preset.h"
 
 namespace nymphes::ui
@@ -55,16 +56,27 @@ inline PresetBank& bank     (Processor& p) { return p.getBank(); }
 inline int  numSlots   (Processor& p) { return bank (p).size(); }
 inline bool slotPresent (Processor& p, int i) { return bank (p).contains (i); }
 inline const Preset& slotPreset (Processor& p, int i) { return bank (p).at (i); }
+// The index helpers below validate the index first: PresetBank::pageFor(-1) answers
+// USER and PresetBank::slotFor(98) wraps to USER A1 while pageFor(98) is FACTORY, so
+// an index left over from a model row that outlived a bank refresh would otherwise
+// silently address a valid but wrong slot. Out of range is simply "not a slot".
 inline bool slotIsFactory (Processor&, int i)
 {
-    return PresetBank::pageFor (i) == Page::Factory;
+    return isFactorySlotIndex (i);
 }
 inline Slot slotOf (Processor&, int i)
 {
-    return PresetBank::slotFor (i);
+    return slotOfIndex (i);
 }
+// Deliberately NOT PresetBank::nameOf(i): that renders displayName() of the preset
+// stored at the index, i.e. the preset's OWN address, which is why an empty slot used
+// to claim "USER A1" (see the header note). The index is the authority for a slot's
+// name, so the string is built from the index and only the presence test comes from
+// the bank.
 inline juce::String slotName (Processor& p, int i)
 {
+    if (! isValidSlotIndex (i))
+        return {};
     const auto s = slotOf (p, i);
     return juce::String (slotIsFactory (p, i) ? "FACTORY " : "USER ")
          + juce::String::charToString (s.bankLetter()) + juce::String ((int) s.program);
@@ -76,7 +88,6 @@ inline juce::String slotSummary (Processor& p, int i)
     const auto s = summaryLine (slotPreset (p, i));
     return juce::String::fromUTF8 (s.c_str(), (int) s.size());
 }
-
 /** The bank index of the preset last loaded or written, or -1 when none is. */
 inline int loadedIndex (Processor& p)
 {
@@ -92,12 +103,24 @@ inline int loadedIndex (Processor& p)
 //--- actions ------------------------------------------------------------------
 inline bool audition (Processor& p, int i, juce::String& error)
 {
+    // An index from a stale model row is not "an empty slot": saying so would send
+    // the user off to request a dump when the row no longer exists.
+    if (! isValidSlotIndex (i) || i >= numSlots (p))
+    {
+        error = "That slot is no longer in the bank. Refresh the list.";
+        return false;
+    }
     if (! slotPresent (p, i))
     {
         error = slotName (p, i) + " is empty. Request a dump or import a .syx first.";
         return false;
     }
     p.loadPresetToDevice (bank (p).at (i));      // FF=00: never touches flash
+    // Only the ERROR semantics are relied on here: an empty string means the frame
+    // was accepted for sending, not that the synth loaded it (loadPresetToDevice is
+    // fire-and-forget, no read-back). lastError is shared with other operations, so
+    // a stale message can make this look like a failure; the processor clears it on
+    // a successful send.
     error = p.getLastError();
     return error.isEmpty();
 }
@@ -116,9 +139,20 @@ inline bool saveLoadedTo (Processor& p, int i, juce::String& error)
         error = "Nothing is loaded. Audition a preset first; that is what gets copied.";
         return false;
     }
-    const bool ok = p.saveToUserSlot (p.getCurrentPreset(), slotOf (p, i));
-    if (! ok)
-        error = p.getLastError();
+    // The preset we auditioned keeps the page it came from, and saveToUserSlot()
+    // refuses any preset whose own address is FACTORY. Handing it the factory-
+    // addressed copy therefore made "audition a FACTORY preset, save it into a USER
+    // slot" fail with "Refusing to write a FACTORY slot" even though the target was
+    // already checked above. Re-addressing a copy keeps that guard intact (it still
+    // refuses a factory-addressed write) and makes the copy work.
+    const Slot target = slotOf (p, i);
+    const bool ok = p.saveToUserSlot (presetForUserWrite (p.getCurrentPreset(), target), target);
+
+    // Read the diagnostic on BOTH paths: saveToUserSlot() returns true when the
+    // write was sent but the read-back could not be requested, and reports that as
+    // "... byte identity is UNVERIFIED". Only reading the error on failure reported
+    // a clean success for an unverified write.
+    error = p.getLastError();
     return ok;
 }
 

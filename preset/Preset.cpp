@@ -4,10 +4,11 @@
 // editor and the CLI: named groups, named parameters, slot formatting, and a
 // one-line summary.
 //
-// The one non-delegating decision here is that nothing in this file ever
-// manufactures a FACTORY write. setFloat/setInt touch the payload only; the
-// write flag is applied by encodeForDevice(), which passes allowFactoryWrite =
-// false unconditionally.
+// The one non-delegating decision here is that this file never manufactures a
+// FACTORY write. setFloat/setInt touch the payload only; the write flag is applied by
+// encodeForDevice(), which does NOT forward core's `allowFactoryWrite` escape hatch:
+// it passes false unconditionally, so FACTORY stays unwritable from every caller of
+// this facade (the codec's own tests still exercise the hatch on the codec directly).
 
 #include "Preset.h"
 
@@ -86,21 +87,41 @@ std::vector<uint8_t> encodeFrame (const Preset& p)
 std::vector<uint8_t> encodeForDevice (const Preset& p, bool persist,
                                       bool allowFactoryWrite, std::string* error)
 {
-    return p.encodeFrame (persist, allowFactoryWrite, error);
+    // The shipping contract: a preset write goes to USER slots only. A FACTORY slot is
+    // refused by core when persist is set, and the escape hatch core offers is not
+    // exposed here - `allowFactoryWrite` is accepted for source compatibility only.
+    (void) allowFactoryWrite;
+    auto frame = p.encodeFrame (persist, /*allowFactoryWrite*/ false, error);
+    if (! frame.empty() && error != nullptr) error->clear();   // no stale text on success
+    return frame;
 }
 
 std::vector<Preset> importSyxFile (const std::string& path, std::string& error)
 {
     std::vector<Preset> out;
     std::string err;
-    if (! Preset::readSyx (path, out, &err)) error = err.empty() ? ("cannot read " + path) : err;
+    if (! Preset::readSyx (path, out, &err))
+    {
+        // Never hand back a partially decoded file: a non-empty result must mean "the
+        // whole file parsed", or a caller that logs the error and loads anyway gets a
+        // truncated bank that looks valid.
+        out.clear();
+        error = err.empty() ? ("cannot read " + path) : err;
+        return out;
+    }
+    error.clear();                     // no stale failure on a successful read
     return out;
 }
 
 bool exportSyxFile (const std::string& path, const std::vector<Preset>& presets, std::string& error)
 {
     std::string err;
-    if (! Preset::writeSyx (path, presets, &err)) { error = err; return false; }
+    if (! Preset::writeSyx (path, presets, &err))
+    {
+        error = err.empty() ? ("cannot write " + path) : err;
+        return false;
+    }
+    error.clear();                     // no stale failure on a successful write
     return true;
 }
 
@@ -138,9 +159,17 @@ int chordIndexFor (Group g) noexcept
 }
 
 const char* const kReverbNames[4] = { "size", "decay", "filter", "mix" };
-const char* const kExtraModNames[4] = { "lfo_2_rate", "lfo_2_wave", "lfo_2_delay", "lfo_2_fade" };
 const char* const kExtraLfoNames[8] = { "lfo_1_rate", "lfo_1_wave", "lfo_1_delay", "lfo_1_fade",
                                         "lfo_2_rate", "lfo_2_wave", "lfo_2_delay", "lfo_2_fade" };
+// The extra_* containers have more slots than the facade has names for, and the schema
+// itself does not name the trailing ones: core's own text dump calls them f<n>
+// (core/src/Codec.cpp toText). Same convention here, so a name means the same thing in
+// both view layers instead of borrowing the LFO names for mod-wheel/velocity/aftertouch.
+const char* const kExtraSlotNames[12] = { "f1", "f2", "f3", "f4", "f5", "f6",
+                                          "f7", "f8", "f9", "f10", "f11", "f12" };
+// Slots per extra_* container: extra_lfo_2 carries 12, the other three carry 8
+// (docs/BUILD-REPORT.md: their trailing slots are optional and absent in some presets).
+constexpr int extraSlotCount (uint32_t top) noexcept { return top == kExtraLfo2 ? 12 : 8; }
 const char* const kLfoSettingNames[4] = { "lfo_1_speed_mode", "lfo_1_sync_mode",
                                           "lfo_2_speed_mode", "lfo_2_sync_mode" };
 const char* const kChordNames[6] = { "root", "semi_1", "semi_2", "semi_3", "semi_4", "semi_5" };
@@ -180,6 +209,8 @@ bool getFloat (const Preset& p, Group g, int subField, float& out)
     if (g == Group::AmpLevel)
     {
         if (subField != 1) return false;
+        // amp_level is an optional top-level field: absent is not zero.
+        if (! p.hasSection (kAmpLevel)) return false;
         out = p.ampLevel();
         return true;
     }
@@ -209,27 +240,30 @@ bool getInt (const Preset& p, Group g, int subField, int64_t& out)
 {
     if (subField < 1) return false;
 
+    // Every branch below repeats the section check the float getters do: an absent
+    // section must not be reported as a real zero ("absent" and "zero" are different
+    // presets on this device).
     if (g == Group::LfoSettings)
     {
-        if (subField > 4) return false;
+        if (! p.hasSection (kLfoSettings) || subField > 4) return false;
         out = static_cast<int64_t> (p.lfoSetting (static_cast<uint32_t> (subField)));
         return true;
     }
     if (g == Group::Legato)
     {
-        if (subField != 1) return false;
+        if (! p.hasSection (kLegato) || subField != 1) return false;
         out = p.legato() ? 1 : 0;
         return true;
     }
     if (g == Group::VoiceMode)
     {
-        if (subField != 1) return false;
+        if (! p.hasSection (kVoiceMode) || subField != 1) return false;
         out = static_cast<int64_t> (p.voiceMode());
         return true;
     }
     if (const int chord = chordIndexFor (g); chord != 0)
     {
-        if (subField > 6) return false;
+        if (! p.hasSection (static_cast<uint32_t> (kChord1 + chord - 1)) || subField > 6) return false;
         out = static_cast<int64_t> (p.chordInfo (static_cast<uint32_t> (chord), static_cast<uint32_t> (subField)));
         return true;
     }
@@ -238,7 +272,22 @@ bool getInt (const Preset& p, Group g, int subField, int64_t& out)
 
 bool setInt (Preset& p, Group g, int subField, int64_t value)
 {
-    if (subField < 1 || value < 0) return false;
+    if (subField < 1) return false;
+
+    // Chords genuinely go negative: the device sends chord_info as an int32 varint and
+    // docs/BUILD-REPORT.md records negative values in the live corpus, which getInt()
+    // already decodes as negative. Rejecting them here made a read/modify/write
+    // round-trip lossy. Only the unsigned fields keep the blanket rejection; the
+    // two's-complement reinterpretation is what core stores (setChordInfo takes
+    // uint64_t and writes the raw varint), so re-encoding is byte-identical.
+    const int chord = chordIndexFor (g);
+    if (value < 0)
+    {
+        if (chord == 0) return false;
+        return subField <= 6 && p.setChordInfo (static_cast<uint32_t> (chord),
+                                                static_cast<uint32_t> (subField),
+                                                static_cast<uint64_t> (value));
+    }
 
     if (g == Group::LfoSettings)
         return subField <= 4 && p.setLfoSetting (static_cast<uint32_t> (subField), static_cast<uint64_t> (value));
@@ -246,7 +295,7 @@ bool setInt (Preset& p, Group g, int subField, int64_t value)
         return subField == 1 && p.setLegato (value != 0);
     if (g == Group::VoiceMode)
         return subField == 1 && value <= 5 && p.setVoiceMode (static_cast<uint64_t> (value));
-    if (const int chord = chordIndexFor (g); chord != 0)
+    if (chord != 0)
         return subField <= 6 && p.setChordInfo (static_cast<uint32_t> (chord),
                                                 static_cast<uint32_t> (subField),
                                                 static_cast<uint64_t> (value));
@@ -288,19 +337,24 @@ std::vector<FieldView> describe (const Preset& p)
             out.push_back ({ Group::Reverb, i, kReverbNames[i - 1], p.reverb (static_cast<uint32_t> (i)), false });
 
     if (p.hasSection (kExtraLfo2))
-        for (int i = 1; i <= 8; ++i)
-            out.push_back ({ Group::ExtraLfo2, i, kExtraLfoNames[i - 1],
+        for (int i = 1; i <= extraSlotCount (kExtraLfo2); ++i)
+            out.push_back ({ Group::ExtraLfo2, i,
+                             i <= 8 ? kExtraLfoNames[i - 1] : kExtraSlotNames[i - 1],
                              p.extra (kExtraLfo2, static_cast<uint32_t> (i)), false });
 
     for (auto g : { Group::ExtraModWheel, Group::ExtraVelocity, Group::ExtraAftertouch })
     {
         const auto top = topFor (g);
         if (! p.hasSection (top)) continue;
-        for (int i = 1; i <= 4; ++i)
-            out.push_back ({ g, i, kExtraModNames[i - 1], p.extra (top, static_cast<uint32_t> (i)), false });
+        for (int i = 1; i <= extraSlotCount (top); ++i)
+            out.push_back ({ g, i, kExtraSlotNames[i - 1],
+                             p.extra (top, static_cast<uint32_t> (i)), false });
     }
 
-    out.push_back ({ Group::AmpLevel, 1, "amp_level", p.ampLevel(), false });
+    // amp_level is an optional top-level field in live payloads: list it only when the
+    // preset carries it, never as a phantom zero.
+    if (p.hasSection (kAmpLevel))
+        out.push_back ({ Group::AmpLevel, 1, "amp_level", p.ampLevel(), false });
 
     if (p.hasSection (kLfoSettings))
         for (int i = 1; i <= 4; ++i)
@@ -329,16 +383,26 @@ std::vector<FieldView> describe (const Preset& p)
 
 std::string summaryLine (const Preset& p)
 {
-    float wave = 0.0f, lvl = 0.0f, cut = 0.0f, res = 0.0f;
-    getFloat (p, Group::Main, static_cast<int> (kWave), wave);
-    getFloat (p, Group::Main, static_cast<int> (kLvl), lvl);
-    getFloat (p, Group::Main, static_cast<int> (kCut), cut);
-    getFloat (p, Group::Main, static_cast<int> (kReson), res);
+    // An absent section is not zero: say so instead of printing 0.000, which reads like
+    // a real value in the browser list and in `nymphes-cli show`.
+    auto field = [&p] (Group g, int slot)
+    {
+        float v = 0.0f;
+        if (! getFloat (p, g, slot, v)) return std::string ("--");
+        char b[24];
+        std::snprintf (b, sizeof b, "%.3f", double (v));
+        return std::string (b);
+    };
+
+    const std::string wave = field (Group::Main, static_cast<int> (kWave));
+    const std::string lvl  = field (Group::Main, static_cast<int> (kLvl));
+    const std::string cut  = field (Group::Main, static_cast<int> (kCut));
+    const std::string res  = field (Group::Main, static_cast<int> (kReson));
 
     char buf[224];
     std::snprintf (buf, sizeof buf,
-                   "%-12s wave %.3f  lvl %.3f  cut %.3f  res %.3f  %s  payload %zu B  crc %s",
-                   displayName (p).c_str(), double (wave), double (lvl), double (cut), double (res),
+                   "%-12s wave %s  lvl %s  cut %s  res %s  %s  payload %zu B  crc %s",
+                   displayName (p).c_str(), wave.c_str(), lvl.c_str(), cut.c_str(), res.c_str(),
                    voiceModeName (p.voiceMode()), p.payloadSize(),
                    p.crcValid() ? "ok" : "BAD");
     return buf;

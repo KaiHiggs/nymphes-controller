@@ -68,6 +68,10 @@ inline constexpr CCParam kCCMap[] = {
     {  16, "chord_selector",                0, 127, CCGroup::Oscillator, nullptr },
     {  17, "play_mode",                     0,   5, CCGroup::General,    "poly|uni-A|uni-B|TRI|DUO|MONO" },
     {  18, "lfo1_rate",                     0, 127, CCGroup::Lfo1,       nullptr },
+    // The wave names below are NOT in ccmap.json (which records CC 19/25 as 0..127
+    // with no labels). The RANGE, not the label list, decides discreteness - see
+    // isDiscrete() - so these two stay continuous 0..127 controllers that happen to
+    // name their five shapes. Do not "fix" the range to 0..4 on that basis.
     {  19, "lfo1_wave",                     0, 127, CCGroup::Lfo1,       "triangle|saw_down|saw_up|square|random" },
     {  20, "lfo1_delay",                    0, 127, CCGroup::Lfo1,       nullptr },
     {  21, "lfo1_fade",                     0, 127, CCGroup::Lfo1,       nullptr },
@@ -139,18 +143,37 @@ inline constexpr CCParam kCCMap[] = {
 
 inline constexpr int kCCCount = static_cast<int> (sizeof (kCCMap) / sizeof (kCCMap[0]));
 
-/** nullptr when the CC is not a Nymphes parameter. */
+// The invariants every consumer relies on, checked at compile time instead of being
+// trusted: the table is the documented 82 entries, and it is strictly ascending and
+// duplicate-free (findCC's scan and indexOfCC's index both assume the order, and a
+// hand-edit or generator regression would otherwise only misbehave at runtime).
+constexpr bool ccMapIsAscending() noexcept
+{
+    for (int i = 1; i < kCCCount; ++i)
+        if (kCCMap[i - 1].cc >= kCCMap[i].cc)
+            return false;
+    return true;
+}
+
+static_assert (kCCCount == 82, "kCCMap must hold the 82 documented Nymphes parameters");
+static_assert (ccMapIsAscending(), "kCCMap must be strictly ascending with unique CC numbers");
+
+/** nullptr when the CC is not a Nymphes parameter. Out-of-range numbers are not
+    parameters either: without the range check a cast to uint8_t makes 257 alias CC 1
+    and 513 alias CC 1 as well. */
 inline const CCParam* findCC (int cc) noexcept
 {
+    if (cc < 0 || cc > 127) return nullptr;
     for (const auto& p : kCCMap)
         if (p.cc == static_cast<uint8_t> (cc))
             return &p;
     return nullptr;
 }
 
-/** Index in kCCMap, or -1. */
+/** Index in kCCMap, or -1 (also -1 for anything outside 0..127). */
 inline int indexOfCC (int cc) noexcept
 {
+    if (cc < 0 || cc > 127) return -1;
     for (int i = 0; i < kCCCount; ++i)
         if (kCCMap[i].cc == static_cast<uint8_t> (cc))
             return i;

@@ -35,10 +35,17 @@ public:
 
     int  size() const noexcept { return kSize; }
     bool contains (int index) const noexcept { return index >= 0 && index < kSize && present_[index]; }
-    const Preset& at (int index) const;              // returns an empty Preset when absent
+    /** Returns an empty Preset when absent (and when `index` is out of range).
+        The reference aliases the bank's own storage and is invalidated by set(),
+        importSyx() and clear(); the bank is not internally synchronised, so a caller
+        that keeps this reference across a mutation - or reads it from another thread -
+        observes stale or raced data. */
+    const Preset& at (int index) const;
     std::string nameOf (int index) const;            // "USER A1" / "FACTORY C3" / "" when absent
 
-    /** Look up a specific location. nullptr when that location is empty. */
+    /** Look up a specific location. nullptr when that location is empty. The pointer
+        aliases internal storage, with the same invalidation and threading rules as
+        at(). */
     const Preset* find (Page, Slot) const noexcept;
 
     /** Store a preset at the location its own aa/slot fields name. Returns false
@@ -49,7 +56,10 @@ public:
         `error` with the first problem but keeps everything that did parse. */
     int importSyx (const std::string& path, std::string& error);
 
-    /** Export one page (or both, when `page` is nullptr) as a single .syx. */
+    /** Export one page (or both, when `page` is nullptr - a non-owning pointer that is
+        read once, never stored) as a single .syx. Returns false and fills `error` when
+        the selection is empty: an empty bank is refused rather than written as a
+        0-message file that the CLI and the device would both read as an empty page. */
     bool exportSyx (const std::string& path, const Page* page, std::string& error) const;
 
     int count (Page) const noexcept;
@@ -58,7 +68,18 @@ public:
     /** Drop everything. */
     void clear();
 
-    /** The default location to look for the vendor dumps: <dir>/<name>. */
+    /** The default location to look for the vendor dumps: <dir>/<name>.
+
+        Two different files, not two views of one:
+          * vendorUserFile()    - Nymphes_Factory_Presets_User_Bank.syx, 98 messages:
+            49 USER then 49 FACTORY. That order is what the index convention above
+            (0..48 USER, 49..97 FACTORY) reproduces.
+          * vendorFactoryFile() - Nymphes_Factory_Presets_Factory_Bank.syx, 49 FACTORY
+            messages only.
+
+        Neither file ships in this repository (the shared gate root holds them); both
+        are resolved relative to <dir>, so a caller must check whether the file it gets
+        back exists before reading it. */
     static const char* vendorFactoryFile();
     static const char* vendorUserFile();
 

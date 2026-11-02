@@ -46,10 +46,11 @@ int ParamPanel::Section::cellCount() const
 }
 
 //==============================================================================
-ParamPanel::ParamPanel (Processor& p) : proc (p)
+ParamPanel::ParamPanel (Processor& p) : proc (p), channelSelector (ccEngine (p))
 {
     surface.onPaint = [this] (juce::Graphics& g) { paintSurface (g); };
     addAndMakeVisible (surface);
+    surface.addAndMakeVisible (channelSelector);
 
     osc = &addSection ("OSCILLATOR");
     addBank (*osc, {},      { { 70, "WAVE" }, { 9, "LVL" }, { 10, "SUB" }, { 11, "NOISE" }, { 13, "LFO" } });
@@ -235,6 +236,11 @@ void ParamPanel::layoutMenu (juce::Rectangle<int> area)
     menu->bounds = area;
     auto r = area.withTrimmedLeft (kBracketPad).withTrimmedRight (kSectionTail)
                  .withTrimmedTop (kTitleH + 6);
+
+    // Routing is always visible, including when a host restores a non-default
+    // channel. It changes our CC destination, not the synth's receive channel.
+    channelSelector.setBounds (r.removeFromTop (28));
+    r.removeFromTop (10);
 
     // VOLUME knob and the WHEEL fader share the top band.
     auto top = r.removeFromTop (juce::jmin (150, r.getHeight() / 3));

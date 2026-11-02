@@ -471,7 +471,11 @@ void BrowserPanel::setStatus (const juce::String& s, bool isError)
 void BrowserPanel::changeListenerCallback (juce::ChangeBroadcaster* source)
 {
     if (source == &presetChanged (proc))
+    {
         rebuildPrints();
+        if (status == "Requesting all 98 presets from the Nymphes...")
+            setStatus ({});
+    }
     updateButtons();
     repaint();
 }
@@ -578,7 +582,8 @@ void BrowserPanel::doCopyLoaded()
                 return;
             juce::String error;
             if (saveLoadedTo (safe->proc, index, error))
-                safe->setStatus ("Wrote " + target + ". Reading it back to verify...");
+                safe->setStatus (error.isEmpty() ? "Wrote " + target + ". Reading it back to verify..."
+                                                  : "Wrote " + target + ". " + error, true);
             else
                 safe->setStatus ("Write refused: " + error, true);
             safe->updateButtons();
@@ -588,29 +593,44 @@ void BrowserPanel::doCopyLoaded()
 
 void BrowserPanel::doImport()
 {
+    if (chooserBusy)
+        return;
+    chooserBusy = true;
+    importButton.setEnabled (false);
+    exportButton.setEnabled (false);
     chooser = std::make_unique<juce::FileChooser> (
         "Import a Nymphes .syx dump",
         juce::File::getSpecialLocation (juce::File::userDocumentsDirectory), "*.syx");
 
     chooser->launchAsync (juce::FileBrowserComponent::openMode
                             | juce::FileBrowserComponent::canSelectFiles,
-        [this] (const juce::FileChooser& fc)
+        [safe = juce::Component::SafePointer<BrowserPanel> (this)] (const juce::FileChooser& fc)
         {
+            if (safe == nullptr)
+                return;
+            safe->chooserBusy = false;
+            safe->importButton.setEnabled (true);
+            safe->exportButton.setEnabled (true);
             const auto f = fc.getResult();
             if (f == juce::File())
                 return;
             juce::String error;
-            if (importSyxFile (proc, f, error))
-                setStatus ("Imported " + f.getFileName() + " into the browser.");
+            if (importSyxFile (safe->proc, f, error))
+                safe->setStatus ("Imported " + f.getFileName() + " into the browser.");
             else
-                setStatus ("Import failed: " + error, true);
-            updateButtons();
-            repaint();
+                safe->setStatus ("Import failed: " + error, true);
+            safe->updateButtons();
+            safe->repaint();
         });
 }
 
 void BrowserPanel::doExport()
 {
+    if (chooserBusy)
+        return;
+    chooserBusy = true;
+    importButton.setEnabled (false);
+    exportButton.setEnabled (false);
     // The processor exports the whole bank (both pages), so the name says so.
     const auto suggested = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
                              .getChildFile ("nymphes_bank.syx");
@@ -619,18 +639,23 @@ void BrowserPanel::doExport()
     chooser->launchAsync (juce::FileBrowserComponent::saveMode
                             | juce::FileBrowserComponent::canSelectFiles
                             | juce::FileBrowserComponent::warnAboutOverwriting,
-        [this] (const juce::FileChooser& fc)
+        [safe = juce::Component::SafePointer<BrowserPanel> (this)] (const juce::FileChooser& fc)
         {
+            if (safe == nullptr)
+                return;
+            safe->chooserBusy = false;
+            safe->importButton.setEnabled (true);
+            safe->exportButton.setEnabled (true);
             auto f = fc.getResult();
             if (f == juce::File())
                 return;
             if (! f.hasFileExtension ("syx"))
                 f = f.withFileExtension ("syx");
             juce::String error;
-            if (exportSyxFile (proc, f, error))
-                setStatus ("Exported to " + f.getFullPathName() + ".");
+            if (exportSyxFile (safe->proc, f, error))
+                safe->setStatus ("Exported to " + f.getFullPathName() + ".");
             else
-                setStatus ("Export failed: " + error, true);
+                safe->setStatus ("Export failed: " + error, true);
         });
 }
 
